@@ -14,15 +14,32 @@ def test_help(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--help"])
     assert caught.value.code == 0
     output = capsys.readouterr().out
-    assert "--host" in output
-    assert "--port" in output
+    assert "serve" in output
+    assert "mcp" in output
 
 
 def test_invalid_cli_port(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as caught:
-        main(["--port", "65536"])
+        main(["serve", "--port", "65536"])
     assert caught.value.code == 2
     assert "65535" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ["serve", "mcp"])
+def test_mode_help(mode: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main([mode, "--help"])
+    assert caught.value.code == 0
+    output = capsys.readouterr().out
+    assert "--host" in output
+    assert "--port" in output
+
+
+def test_cli_requires_explicit_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as caught:
+        main([])
+    assert caught.value.code == 2
+    assert "required" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process signal handling")
@@ -32,6 +49,7 @@ async def test_cli_runs_and_shuts_down_on_signal(signum: signal.Signals) -> None
         sys.executable,
         "-c",
         "from tyvrana_core.cli import main; main()",
+        "serve",
         "--port",
         "0",
         stdout=asyncio.subprocess.PIPE,

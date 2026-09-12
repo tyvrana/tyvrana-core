@@ -11,6 +11,8 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
+    "anyio>=4.15.1",
+    "mcp>=2.2.0",
     "pydantic>=2.13.5",
     "tyvrana-protocol @ git+https://github.com/tyvrana/tyvrana-protocol.git@ba623d22555dff46e1d8a7a6b3a01417bf584136",
     "websockets>=16.0",
