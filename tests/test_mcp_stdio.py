@@ -62,7 +62,9 @@ def listening_uri(log: str) -> str:
 @asynccontextmanager
 async def stdio_session(tmp_path: Path) -> AsyncIterator[tuple[Client, str]]:
     cmd = command()
-    params = StdioServerParameters(command=cmd[0], args=cmd[1:], env=environment())
+    params = StdioServerParameters(
+        command=cmd[0], args=cmd[1:], env={**environment(), "TMPDIR": str(tmp_path)}
+    )
     log_path = tmp_path / "server.log"
     with log_path.open("w") as errors:
         async with Client(
@@ -77,6 +79,7 @@ async def stdio_session(tmp_path: Path) -> AsyncIterator[tuple[Client, str]]:
     assert "was destroyed" not in log
     assert "was never awaited" not in log
     assert "ResourceWarning" not in log
+    assert not list(tmp_path.glob("tyvrana-artifacts-*"))  # noqa: ASYNC240 - Bounded test directory.
 
 
 async def register(fake: FakeAdapter, client: Client) -> None:

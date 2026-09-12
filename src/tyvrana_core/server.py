@@ -8,18 +8,23 @@ from typing import Self
 from tyvrana_protocol import (
     AdapterEvent,
     AdapterRegistration,
+    ArtifactAbort,
+    ArtifactBegin,
+    ArtifactComplete,
     Message,
     OperationFailure,
     OperationSuccess,
+    decode_artifact_chunk,
     decode_message,
 )
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
+from .artifacts import ArtifactStore
 from .config import CoreConfig
 from .connection import AdapterConnection
 from .dispatcher import OperationDispatcher
-from .errors import DuplicateAdapter, InvalidAdapterBehavior
+from .errors import AdapterDisconnected, DuplicateAdapter, InvalidAdapterBehavior
 from .events import EventBroker
 from .registry import AdapterRegistry
 
@@ -31,6 +36,7 @@ class AdapterServer:
         self.config = config if config is not None else CoreConfig()
         self.registry = AdapterRegistry()
         self.events = EventBroker()
+        self.artifacts = ArtifactStore(self.config)
         self.dispatcher = OperationDispatcher(
             self.registry, self.config.operation_timeout
         )
@@ -63,13 +69,22 @@ class AdapterServer:
                 close_timeout=self.config.close_timeout,
                 open_timeout=self.config.registration_timeout,
                 compression=None,
+                max_queue=8,
             )
+            try:
+                self.artifacts.start()
+            except BaseException:
+                self._server.close()
+                await self._server.wait_closed()
+                self._server = None
+                raise
             logger.info("Adapter server listening on %s", self.uri)
 
     async def stop(self) -> None:
         async with self._lifecycle_lock:
             if self._server is None:
                 self.events.close()
+                self.artifacts.close()
                 return
             self._stopping = True
             self._server.close()
@@ -84,6 +99,7 @@ class AdapterServer:
                 raise
             finally:
                 self._server = None
+                self.artifacts.close()
             logger.info("Adapter server stopped")
 
     async def __aenter__(self) -> Self:
@@ -100,10 +116,10 @@ class AdapterServer:
 
     @staticmethod
     def _decode(data: str | bytes) -> Message:
+        if not isinstance(data, str):
+            raise InvalidAdapterBehavior("Control messages must use WebSocket text")
         try:
-            return decode_message(
-                data.encode("utf-8") if isinstance(data, str) else data
-            )
+            return decode_message(data.encode("utf-8"))
         except (ValueError, RecursionError) as exc:
             raise InvalidAdapterBehavior("Malformed protocol message") from exc
 
@@ -121,18 +137,31 @@ class AdapterServer:
                 await websocket.close(code=1001, reason="Server shutting down")
                 return
             connection = AdapterConnection(
-                websocket, registration, self.config.send_timeout
+                websocket, registration, self.config.send_timeout, self.artifacts
             )
             self.registry._add(connection)
             logger.info("Adapter registered: %s", registration.instance_id)
             async for data in websocket:
                 if self._stopping:
                     break
+                if isinstance(data, bytes):
+                    try:
+                        chunk = decode_artifact_chunk(data)
+                    except ValueError as exc:
+                        raise InvalidAdapterBehavior(
+                            "Malformed artifact chunk"
+                        ) from exc
+                    await connection.artifact(chunk)
+                    continue
                 message = self._decode(data)
                 if isinstance(message, (OperationSuccess, OperationFailure)):
                     connection.resolve(message)
                 elif isinstance(message, AdapterEvent):
                     self.events._publish(registration.instance_id, message)
+                elif isinstance(
+                    message, (ArtifactBegin, ArtifactComplete, ArtifactAbort)
+                ):
+                    await connection.artifact(message)
                 else:
                     raise InvalidAdapterBehavior(
                         "Message direction is not adapter to core"
@@ -143,7 +172,7 @@ class AdapterServer:
                 connection.disconnect("Invalid adapter behavior")
                 self.registry._remove(connection)
             await websocket.close(code=1008, reason="Invalid adapter behavior")
-        except ConnectionClosed:
+        except (ConnectionClosed, AdapterDisconnected):
             pass
         finally:
             if connection is not None:

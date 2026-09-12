@@ -56,7 +56,7 @@ async def test_slow_subscriber_overflow_does_not_block_receive_loop(
                     result="responsive",
                 )
             )
-            assert await task == "responsive"
+            assert (await task).result == "responsive"
             assert slow.closed
             with pytest.raises(EventSubscriptionOverflow):
                 await anext(slow)

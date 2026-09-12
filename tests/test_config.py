@@ -28,6 +28,11 @@ def test_defaults_are_local_and_bounded() -> None:
         ("send_timeout", float("inf")),
         ("close_timeout", float("nan")),
         ("max_message_size", 0),
+        ("max_artifact_size", 0),
+        ("max_artifact_storage", -1),
+        ("max_artifact_entries", True),
+        ("max_artifact_transfers", "4"),
+        ("max_inline_image_bytes", 0),
         ("unknown", 1),
     ],
 )

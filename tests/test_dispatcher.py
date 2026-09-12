@@ -51,7 +51,7 @@ async def test_success_and_recursive_json(
                 type="operation.success", request_id=request.request_id, result=result
             )
         )
-        assert await task == result
+        assert (await task).result == result
         assert server.dispatcher.pending_count == 0
 
 
@@ -100,7 +100,7 @@ async def test_unsupported_operation_is_never_sent(server: AdapterServer) -> Non
                 type="operation.success", request_id=request.request_id, result={}
             )
         )
-        assert await task == {}
+        assert (await task).result == {}
 
 
 @pytest.mark.parametrize("timeout", [0.0, -1.0, float("nan"), float("inf")])
@@ -141,7 +141,9 @@ async def test_concurrent_responses_correlate_out_of_order(
                     result=request.arguments,
                 )
             )
-        assert await asyncio.gather(*tasks) == [{"index": index} for index in range(8)]
+        assert [r.result for r in await asyncio.gather(*tasks)] == [
+            {"index": index} for index in range(8)
+        ]
         assert server.dispatcher.pending_count == 0
 
 
@@ -172,7 +174,7 @@ async def test_routes_to_selected_adapter_and_rejects_cross_connection_response(
                 type="operation.success", request_id=request.request_id, result="right"
             )
         )
-        assert await task == "right"
+        assert (await task).result == "right"
 
 
 async def test_timeout_sends_cancel_and_late_response_does_not_break_connection(
@@ -213,7 +215,7 @@ async def test_timeout_sends_cancel_and_late_response_does_not_break_connection(
                 result="current",
             )
         )
-        assert await following == "current"
+        assert (await following).result == "current"
         assert "unknown or stale response" in caplog.text
 
 
@@ -311,7 +313,9 @@ async def test_response_cancellation_race(
         if not response_first:
             await fake.send(response)
         outcome = (await asyncio.gather(task, return_exceptions=True))[0]
-        assert outcome == "done" or isinstance(outcome, asyncio.CancelledError)
+        assert (
+            isinstance(outcome, OperationSuccess) and outcome.result == "done"
+        ) or isinstance(outcome, asyncio.CancelledError)
         with server.events.subscribe() as events:
             await fake.send(
                 AdapterEvent(type="adapter.event", event="test.barrier", payload=None)

@@ -1,5 +1,6 @@
 """Local orchestration and adapter connections for Tyvrana."""
 
+from .artifacts import ArtifactError, ArtifactStore
 from .config import CoreConfig
 from .dispatcher import OperationDispatcher
 from .errors import (
@@ -18,6 +19,8 @@ from .registry import AdapterInfo, AdapterRegistry
 from .server import AdapterServer
 
 __all__ = [
+    "ArtifactError",
+    "ArtifactStore",
     "AdapterDisconnected",
     "AdapterInfo",
     "AdapterNotFound",

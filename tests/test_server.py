@@ -35,11 +35,10 @@ async def test_server_lifecycle_and_repeated_start_stop() -> None:
             _ = server.uri
 
 
-@pytest.mark.parametrize("text", [False, True])
 async def test_registration_metadata_and_disconnect(
-    server: AdapterServer, text: bool
+    server: AdapterServer,
 ) -> None:
-    async with adapter(server, text=text):
+    async with adapter(server):
         info = server.registry.get("adapter-a")
         assert info.connected
         assert info.registration.application == "Example Editor"
@@ -72,7 +71,7 @@ async def test_duplicate_active_id_does_not_remove_original(
     async with adapter(server) as original:
         async with connect(server.uri, proxy=None) as duplicate:
             await duplicate.send(
-                encode_message(server.registry.get("adapter-a").registration)
+                encode_message(server.registry.get("adapter-a").registration).decode()
             )
             async with asyncio.timeout(2):
                 await duplicate.wait_closed()
@@ -115,7 +114,7 @@ async def test_invalid_first_message_is_rejected(
     server: AdapterServer, wire: bytes
 ) -> None:
     async with connect(server.uri, proxy=None) as websocket:
-        await websocket.send(wire)
+        await websocket.send(wire if wire == b"\xff" else wire.decode())
         async with asyncio.timeout(2):
             await websocket.wait_closed()
         assert websocket.close_code == 1008
@@ -164,7 +163,7 @@ async def test_malformed_post_registration_data(
     server: AdapterServer, wire: bytes
 ) -> None:
     async with adapter(server) as fake:
-        await fake.websocket.send(wire)
+        await fake.websocket.send(wire if wire == b"\xff" else wire.decode())
         async with asyncio.timeout(2):
             await fake.websocket.wait_closed()
         assert fake.websocket.close_code == 1008
@@ -250,7 +249,7 @@ async def test_registration_racing_shutdown_is_not_added(
                     application="App",
                     operations=(),
                 )
-            )
+            ).decode()
         )
         async with asyncio.timeout(2):
             await received.wait()

@@ -7,6 +7,7 @@ from tyvrana_protocol import (
     AdapterRegistration,
     JsonValue,
     Message,
+    OperationSuccess,
     decode_message,
     encode_message,
 )
@@ -25,9 +26,9 @@ class FakeAdapter:
     def __init__(self, websocket: ClientConnection) -> None:
         self.websocket = websocket
 
-    async def send(self, message: Message, *, text: bool = False) -> None:
+    async def send(self, message: Message) -> None:
         wire = encode_message(message)
-        await self.websocket.send(wire.decode() if text else wire)
+        await self.websocket.send(wire.decode())
 
     async def receive(self) -> Message:
         async with asyncio.timeout(2):
@@ -41,7 +42,6 @@ async def adapter(
     instance_id: str = "adapter-a",
     *,
     operations: tuple[str, ...] = ("document.inspect",),
-    text: bool = False,
 ) -> AsyncIterator[FakeAdapter]:
     async with connect(server.uri, proxy=None, close_timeout=0.2) as websocket:
         fake = FakeAdapter(websocket)
@@ -55,7 +55,6 @@ async def adapter(
                     project_path="projects/example.project",
                     operations=operations,
                 ),
-                text=text,
             )
             # An event after registration is a deterministic receive-loop barrier.
             await fake.send(
@@ -72,7 +71,7 @@ async def adapter(
 
 def execute(
     server: AdapterServer, *, adapter_id: str = "adapter-a", arguments: JsonValue = None
-) -> asyncio.Task[JsonValue]:
+) -> asyncio.Task[OperationSuccess]:
     return asyncio.create_task(
         server.dispatcher.execute(
             adapter_id=adapter_id, operation="document.inspect", arguments=arguments

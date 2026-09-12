@@ -1,6 +1,7 @@
 """Typed discovery and execution tools for the official MCP server."""
 
 import asyncio
+import base64
 import json
 import logging
 
@@ -9,6 +10,7 @@ from mcp.server import ServerRequestContext
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
+    ImageContent,
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
@@ -16,8 +18,15 @@ from mcp.types import (
     ToolAnnotations,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from tyvrana_protocol import Identifier, JsonValue, QualifiedName
+from tyvrana_protocol import (
+    ArtifactDescriptor,
+    Identifier,
+    JsonValue,
+    OperationSuccess,
+    QualifiedName,
+)
 
+from ..artifacts import ArtifactError
 from ..errors import (
     AdapterDisconnected,
     AdapterNotFound,
@@ -60,6 +69,9 @@ class ExecuteOperationInput(_ToolModel):
 
 class ExecuteOperationOutput(_ToolModel):
     result: JsonValue
+    artifacts: tuple[ArtifactDescriptor, ...] = Field(
+        default=(), exclude_if=lambda v: not v
+    )
 
 
 async def list_tools(
@@ -137,7 +149,9 @@ def _core_failure(
     return _failure(code, str(error))
 
 
-async def _execute(core: AdapterServer, request: ExecuteOperationInput) -> JsonValue:
+async def _execute(
+    core: AdapterServer, request: ExecuteOperationInput
+) -> OperationSuccess:
     # Keep core's edge-triggered asyncio cancellation independent of the SDK's
     # level-triggered AnyIO scopes. Own and join the worker on every exit path.
     work = asyncio.create_task(
@@ -153,7 +167,48 @@ async def _execute(core: AdapterServer, request: ExecuteOperationInput) -> JsonV
         work.cancel()
         with anyio.CancelScope(shield=True):
             await asyncio.gather(work, return_exceptions=True)
+        if not work.cancelled() and work.exception() is None:
+            for descriptor in work.result().artifacts:
+                core.artifacts.release(descriptor.artifact_id)
         raise
+
+
+def _operation_success(
+    core: AdapterServer, response: OperationSuccess
+) -> CallToolResult:
+    try:
+        images = [
+            descriptor
+            for descriptor in response.artifacts
+            if descriptor.media_type in ("image/png", "image/jpeg")
+        ]
+        if (
+            sum(descriptor.byte_size for descriptor in images)
+            > core.config.max_inline_image_bytes
+        ):
+            return _failure(
+                "image_too_large",
+                "Images exceed the MCP inline byte limit; use a smaller output",
+            )
+        output = _success(
+            ExecuteOperationOutput(result=response.result, artifacts=response.artifacts)
+        )
+        for descriptor in images:
+            with core.artifacts.open(descriptor.artifact_id) as stream:
+                data = stream.read(core.config.max_inline_image_bytes + 1)
+            if len(data) != descriptor.byte_size:
+                raise ArtifactError("Completed image size changed")
+            output.content.append(
+                ImageContent(
+                    type="image",
+                    mime_type=descriptor.media_type,
+                    data=base64.b64encode(data).decode("ascii"),
+                )
+            )
+        return output
+    finally:
+        for descriptor in response.artifacts:
+            core.artifacts.release(descriptor.artifact_id)
 
 
 async def call_tool(
@@ -195,7 +250,9 @@ async def call_tool(
                 )
             )
             return _success(ListAdaptersOutput(adapters=adapters))
-        return _success(ExecuteOperationOutput(result=await _execute(core, request)))
+        return _operation_success(core, await _execute(core, request))
+    except ArtifactError as exc:
+        return _failure("artifact_transfer_failed", str(exc))
     except (
         AdapterNotFound,
         UnsupportedOperation,

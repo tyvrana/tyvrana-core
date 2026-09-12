@@ -3,7 +3,12 @@
 import math
 from uuid import uuid4
 
-from tyvrana_protocol import JsonValue, OperationFailure, OperationRequest
+from tyvrana_protocol import (
+    JsonValue,
+    OperationFailure,
+    OperationRequest,
+    OperationSuccess,
+)
 
 from .errors import RemoteOperationError, UnsupportedOperation
 from .registry import AdapterRegistry
@@ -25,7 +30,7 @@ class OperationDispatcher:
         operation: str,
         arguments: JsonValue,
         timeout: float | None = None,
-    ) -> JsonValue:
+    ) -> OperationSuccess:
         """Execute an operation; cancelling the caller requests remote cancellation.
 
         The timeout includes sending and waiting for a response. Cancellation
@@ -46,4 +51,4 @@ class OperationDispatcher:
         response = await connection.request(request, limit)
         if isinstance(response, OperationFailure):
             raise RemoteOperationError(adapter_id, request.request_id, response.error)
-        return response.result
+        return response
