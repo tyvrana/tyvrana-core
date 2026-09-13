@@ -9,7 +9,8 @@ application instances, routes operations, correlates responses, and distributes
 adapter events internally. Its MCP interface lets local clients discover connected
 adapters and execute their advertised operations. Application adapters are
 separate repositories. Binary artifacts are verified and held in bounded temporary
-storage; PNG and JPEG artifacts can be returned as MCP image content.
+storage; PNG and JPEG outputs can be returned as MCP image content. Local files
+can be imported into core-owned storage and attached as binary operation inputs.
 
 ## Run the adapter server
 
@@ -49,7 +50,7 @@ does not start services.
 
 ### Tools
 
-Exactly two tools are available. Both publish Pydantic-generated input and output
+Four tools are available. All publish Pydantic-generated input and output
 JSON schemas and reject unexpected input fields. Successful responses provide
 the object below as MCP `structuredContent` and as JSON in a text content block.
 
@@ -74,7 +75,7 @@ supply them. Adapters are sorted by instance ID and operations by name. With no
 connected adapters the result is `{"adapters": []}`. Results are independent
 snapshots of connected adapter metadata.
 
-`tyvrana_execute_operation` requires all three fields:
+`tyvrana_execute_operation` requires these three fields:
 
 ```json
 {
@@ -90,7 +91,67 @@ its real response. `document.inspect` here is an illustrative adapter operation.
 The tool uses the configured core operation deadline (30 seconds by default);
 there is no MCP timeout override.
 
-Without artifacts, the output is `{"result": <JSON value>}`. Both `arguments` and `result` accept the
+Optional `artifact_ids` is an ordered array of zero through eight unique opaque
+artifact IDs returned by import. Omission means no inputs; explicit null is
+invalid. Core resolves complete descriptors and transfers every input before
+sending the operation. The application's arguments may identify which attachment
+to use, but contain no source path or embedded bytes:
+
+```json
+{
+  "adapter_id": "example-editor",
+  "operation": "asset.import",
+  "arguments": {"artifact_id": "00112233445566778899aabbccddeeff"},
+  "artifact_ids": ["00112233445566778899aabbccddeeff"]
+}
+```
+
+`asset.import` is illustrative; each adapter defines its typed operation arguments.
+Input and output attachments are independent; input descriptors are not echoed
+as output artifacts.
+
+`tyvrana_import_artifact` takes required `path`, optional `name`, and optional
+`media_type`. It copies a readable local regular file into core-owned temporary
+storage and returns an `ArtifactDescriptor` directly:
+
+```text
+{
+  artifact_id: string, name: string, media_type: string,
+  byte_size: integer, sha256: string
+}
+```
+
+For example, `{"path": "textures/checker.png", "name": "Checker"}` imports a
+file relative to core's working directory. Absolute local paths are also accepted.
+This is exclusively a **local ingestion boundary**: the source path terminates
+at core, is not retained in public artifact metadata, and never enters the
+application protocol. Adapters receive descriptors and binary bytes, not the
+source filename's location. The returned name defaults to the source basename;
+overrides must be nonblank display names without separators or control characters.
+
+Directories, devices, FIFOs, and final-component symlinks are rejected. Core checks
+the opened file's identity/type and size, reserves quota before copying, streams
+in bounded chunks, computes exact size/SHA-256, and rejects changes detected during
+copying. Subsequent source modification or deletion does not affect the imported
+copy. File errors are sanitized and return `artifact_import_failed` without paths.
+
+PNG/JPEG signatures take precedence over filename inference. Otherwise MIME
+inference uses the filename with `application/octet-stream` as the fallback,
+including filenames that imply an additional compression encoding.
+An explicit override must be a valid lowercase type/subtype without parameters;
+PNG/JPEG declarations must match the signature. Core is generic storage, not a
+full raster decoder: adapters must validate supported formats and decoded bounds.
+Nulls and unknown input fields are rejected.
+
+`tyvrana_release_artifact` takes `{"artifact_id": "..."}` and returns
+`{"released": true}` on the first release, or `{"released": false}` if unavailable
+or already released. Imports remain reusable across operations until release or
+runtime shutdown. Release prevents new admissions immediately. Already admitted
+transfers retain their readers and quota reservation until transfer finishes;
+they do not depend on the original local file.
+
+Operation execution without output artifacts returns `{"result": <JSON value>}`.
+Both `arguments` and `result` accept the
 protocol's `JsonValue`: objects, arrays, strings, finite numbers, booleans, or
 null, including nested values. Strings such as `"null"` and `"[]"` remain strings.
 A null result is explicitly returned as `{"result": null}`.
@@ -133,7 +194,8 @@ All contracts, validation, and wire serialization use `tyvrana-protocol`.
 
 After registration, adapters may send only `operation.success`,
 `operation.failure`, `adapter.event`, `artifact.begin`, `artifact.complete`,
-`artifact.abort`, or binary artifact chunks. Malformed protocol data and invalid
+`artifact.ready`, `artifact.accepted`, `artifact.abort`, or binary artifact chunks.
+Input acknowledgements are correlated to core-originated transfers. Malformed protocol data and invalid
 directions close the connection with code `1008`; invalid WebSocket text encoding
 uses `1007`, oversized messages use `1009`, and server shutdown uses `1001`.
 Unknown, duplicate, or stale response IDs are logged and ignored. Responses are
@@ -151,10 +213,10 @@ its requests.
 | `send_timeout` | 5 seconds |
 | `close_timeout` | 2 seconds |
 | `max_message_size` | 1 MiB |
-| `max_artifact_size` | 16 MiB per artifact |
-| `max_artifact_storage` | 64 MiB reserved + completed across the runtime |
+| `max_artifact_size` | 128 MiB per artifact |
+| `max_artifact_storage` | 512 MiB reserved + completed across the runtime |
 | `max_artifact_entries` | 128 reserved + completed across the runtime |
-| `max_artifact_transfers` | 4 active incoming transfers per adapter |
+| `max_artifact_transfers` | 4 incoming transfers and 4 concurrent input deliveries per adapter; 4 local imports |
 | `max_inline_image_bytes` | 4 MiB raw image bytes total per MCP result |
 
 The WebSocket opening handshake also uses the registration timeout. The listener
@@ -211,7 +273,7 @@ its `result` and typed `artifacts`.
 attribute. Missing adapters, unsupported operations, disconnects, and deadlines
 have distinct exceptions derived from `CoreError`.
 
-The operation deadline covers sending and awaiting the response. A deadline
+The operation deadline covers input admission/transfer, sending, and awaiting the response. A deadline
 clears pending state, attempts `operation.cancel` on a live connection, and raises
 `OperationTimeout`. Cancellation delivery can take up to `send_timeout` beyond
 the operation deadline.
@@ -226,6 +288,24 @@ semantics; late responses are ignored without affecting other operations.
 
 ## Temporary artifacts and MCP images
 
+Input delivery uses the same canonical controls and binary frames as output:
+
+```text
+complete core artifact → begin → ready → binary chunks → complete → accepted
+all inputs accepted → operation.request → operation.success / operation.failure
+```
+
+Each use gets a fresh transfer ID and retains request correlation through operation
+completion, including aborts received after acceptance. Concurrent uses have
+independent readers and offsets. Core checks stored size/hash while streaming;
+the adapter must verify its receipt and accept every descriptor before executing.
+An operation referencing incomplete or changed inputs must never begin. The
+request carries descriptors in its typed `artifacts` field, outside `arguments`.
+Input transfer failures/cancellation send request cancellation, including before
+the operation itself was delivered. A failed or disconnected use does not release
+the reusable core source. Adapter request-scoped copies are the adapter's cleanup
+responsibility. There is no second binary protocol or upload service.
+
 Core reserves the entire declared size before acknowledging `artifact.begin` with
 `artifact.ready`. Chunks are written incrementally to a private incomplete file.
 Offsets must start at zero and advance exactly; size and SHA-256 are verified on
@@ -236,18 +316,20 @@ a completed artifact. The protocol permits up to eight artifacts per result.
 
 Limit, offset, size, hash, and ownership failures become an
 `artifact_transfer_failed` operation error and `artifact.abort`. Core cancels the
-related operation and deletes all of its artifacts. Other operations keep running.
+related operation and deletes its received output artifacts. Other operations and
+reusable imported sources remain independent.
 Unknown late chunks receive `artifact.abort`; invalid framing and transfer-ID
 collisions close the offending adapter connection. No failed transfer can replace
 another artifact. The operation deadline includes transfer and acknowledgements.
 
-The runtime's `artifacts` (`ArtifactStore`) exposes `metadata(artifact_id)`,
+The runtime's `artifacts` (`ArtifactStore`) exposes asynchronous
+`import_file(path, name=None, media_type=None)`, `metadata(artifact_id)`,
 `open(artifact_id)` (a binary file object to close after use), and
 `release(artifact_id)`. It exposes no storage paths in the wire protocol or MCP.
 For programmatic dispatcher users, successful artifacts remain until explicit
 release or runtime shutdown, subject to the entry/byte bounds. Full stores reject
 new admission; there is no eviction or permanent storage. Cancelled or failed
-requests lose all their artifacts, including verified files awaiting response
+requests lose their output artifacts, including verified files awaiting response
 delivery. Adapter disconnect removes unfinished requests; already returned
 successful artifacts remain available. Shutdown removes the entire store.
 
@@ -257,9 +339,9 @@ block for each `image/png` or `image/jpeg` artifact in descriptor order. MCP's
 standard `data` field contains its normal base64 wire encoding; Tyvrana JSON
 payloads contain no encoded image data. Other media types currently return
 metadata only, without an invented resource link or byte retrieval capability.
-MCP releases all associated files after constructing its response, also on error
-or cancellation. Descriptors in MCP output describe delivered content; they are
-not persistent retrieval handles.
+MCP releases operation output files after constructing its response, also on error
+or cancellation. Descriptors returned by operation execution describe delivered
+output; descriptors returned by import identify reusable stored inputs.
 
 The inline limit applies to the sum of raw PNG/JPEG bytes. Exceeding it returns
 `image_too_large` and releases the files. Base64 and JSON serialization add memory
@@ -267,6 +349,12 @@ and wire overhead; large production images need future resource/file semantics,
 not unlimited inline responses. Use modest render dimensions for immediate visual
 feedback. Limits are configured through `CoreConfig`; the CLI uses these defaults.
 No additional services, database, or storage dependencies are required.
+
+The 128 MiB input limit accommodates typical professional 2K/4K texture files;
+4K RGBA8 pixels alone require 64 MiB before file overhead. Input bytes stream via
+temporary files, rather than a full in-memory upload. Decoder pixel/memory limits
+remain an adapter concern. Store limits count partial, completed, and released
+but still leased files; they do not permit arbitrary multi-gigabyte admission.
 
 ## Events
 

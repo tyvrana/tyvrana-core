@@ -1,10 +1,18 @@
 """Bounded temporary artifacts; all mutation runs on the core event loop."""
 
+import asyncio
 import hashlib
+import mimetypes
+import os
+import stat
 import tempfile
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import BinaryIO
+from uuid import uuid4
 
+from pydantic import ValidationError
 from tyvrana_protocol import (
     MAX_ARTIFACT_CHUNK_SIZE,
     ArtifactBegin,
@@ -19,6 +27,51 @@ class ArtifactError(Exception):
     """A public, path-free artifact failure."""
 
 
+def _open_source(path: Path) -> tuple[BinaryIO, os.stat_result]:
+    """Reject special files and final symlinks before any content read."""
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise ArtifactError("Source must be a regular file, not a symlink")
+        descriptor = os.open(
+            path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            actual = os.fstat(descriptor)
+            if not stat.S_ISREG(actual.st_mode) or (actual.st_dev, actual.st_ino) != (
+                before.st_dev,
+                before.st_ino,
+            ):
+                raise ArtifactError("Source file changed during admission")
+            return os.fdopen(descriptor, "rb"), actual
+        except BaseException:
+            os.close(descriptor)
+            raise
+    except (OSError, ValueError) as exc:
+        raise ArtifactError("Cannot open a readable regular source file") from exc
+
+
+def _media_type(path: Path, prefix: bytes, explicit: str | None) -> str:
+    inferred, encoding = mimetypes.guess_type(path.name, strict=True)
+    detected = (
+        "image/png"
+        if prefix.startswith(b"\x89PNG\r\n\x1a\n")
+        else "image/jpeg"
+        if prefix.startswith(b"\xff\xd8\xff")
+        else None
+    )
+    result = (
+        explicit
+        if explicit is not None
+        else detected
+        or (inferred if encoding is None else None)
+        or "application/octet-stream"
+    )
+    if result in {"image/png", "image/jpeg"} and result != detected:
+        raise ArtifactError("Raster signature does not match its media type")
+    return result
+
+
 class _Entry:
     def __init__(self, owner: str, begin: ArtifactBegin, path: Path) -> None:
         self.owner = owner
@@ -29,14 +82,17 @@ class _Entry:
         self.offset = 0
         self.complete = False
         self.claimed = False
+        self.leases = 0
+        self.released = False
 
 
 class ArtifactStore:
     """Reserve before writing; publish only exact, hash-verified content.
 
     Successful direct callers own explicit release. MCP releases its artifacts
-    after constructing output. Failures/cancellation delete the whole request's
-    artifacts. No eviction: full stores reject admission. Shutdown deletes all.
+    after constructing output. Imported sources persist until explicit release
+    or shutdown. Admission leases keep in-use bytes charged to the quota even
+    after release, until their last reader exits. No eviction on a full store.
     """
 
     def __init__(self, config: CoreConfig) -> None:
@@ -165,7 +221,7 @@ class ArtifactStore:
 
     def metadata(self, artifact_id: str) -> ArtifactDescriptor:
         entry = self._entries.get(artifact_id)
-        if entry is None or not entry.complete:
+        if entry is None or not entry.complete or entry.released:
             raise ArtifactError("Completed artifact is unavailable")
         return entry.begin.descriptor
 
@@ -176,7 +232,16 @@ class ArtifactStore:
         except OSError as exc:
             raise ArtifactError("Cannot read temporary artifact") from exc
 
-    def release(self, artifact_id: str) -> None:
+    def release(self, artifact_id: str) -> bool:
+        entry = self._entries.get(artifact_id)
+        if entry is None or entry.released:
+            return False
+        entry.released = True
+        if not entry.leases:
+            self._delete(artifact_id)
+        return True
+
+    def _delete(self, artifact_id: str) -> None:
         entry = self._entries.pop(artifact_id, None)
         if entry is None:
             return
@@ -186,6 +251,107 @@ class ArtifactStore:
                 entry.file.close()
         finally:
             entry.path.unlink(missing_ok=True)
+
+    @contextmanager
+    def lease(
+        self, descriptors: tuple[ArtifactDescriptor, ...]
+    ) -> Iterator[tuple[tuple[ArtifactDescriptor, BinaryIO], ...]]:
+        """Admit a complete immutable set and own every reader until it exits."""
+        entries: list[_Entry] = []
+        try:
+            with ExitStack() as files:
+                readers = []
+                for descriptor in descriptors:
+                    if self.metadata(descriptor.artifact_id) != descriptor:
+                        raise ArtifactError("Stored artifact descriptor does not match")
+                    entry = self._entries[descriptor.artifact_id]
+                    stream = files.enter_context(self.open(descriptor.artifact_id))
+                    entry.leases += 1
+                    entries.append(entry)
+                    readers.append((descriptor, stream))
+                yield tuple(readers)
+        finally:
+            for entry in entries:
+                entry.leases -= 1
+                if entry.released and not entry.leases:
+                    self._delete(entry.begin.descriptor.artifact_id)
+
+    async def import_file(
+        self, path: str, *, name: str | None = None, media_type: str | None = None
+    ) -> ArtifactDescriptor:
+        """Copy one local regular file; source paths terminate at this boundary.
+
+        Bounded reads/writes stay on the owning loop, yielding between chunks.
+        Never publish a partial copy or retain the original path as metadata.
+        """
+        if self._directory is None:
+            raise ArtifactError("Artifact store is closed")
+        source = Path(path)
+        stream, before = _open_source(source)
+        artifact_id = uuid4().hex
+        try:
+            if before.st_size > self.config.max_artifact_size:
+                raise ArtifactError("Artifact exceeds the individual size limit")
+            display_name = source.name if name is None else name
+            if (
+                not display_name.strip()
+                or display_name in {".", ".."}
+                or any(c in "/\\" or ord(c) < 32 or ord(c) == 127 for c in display_name)
+            ):
+                raise ArtifactError("Artifact name must be a display name, not a path")
+            prefix = stream.read(32)
+            stream.seek(0)
+            try:
+                descriptor = ArtifactDescriptor(
+                    artifact_id=artifact_id,
+                    name=display_name,
+                    media_type=_media_type(source, prefix, media_type),
+                    byte_size=before.st_size,
+                    sha256="0" * 64,
+                )
+            except ValidationError as exc:
+                raise ArtifactError("Invalid artifact name or media type") from exc
+            message = ArtifactBegin(
+                type="artifact.begin",
+                transfer_id=uuid4().hex,
+                request_id=uuid4().hex,
+                descriptor=descriptor,
+            )
+            owner = "local-import"
+            self.begin(owner, message)
+            while chunk := stream.read(MAX_ARTIFACT_CHUNK_SIZE):
+                entry = self._entries.get(artifact_id)
+                if entry is None:
+                    raise ArtifactError("Artifact import was interrupted")
+                self.write(
+                    owner, ArtifactChunk(message.transfer_id, entry.offset, chunk)
+                )
+                await asyncio.sleep(0)
+            after = os.fstat(stream.fileno())
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise ArtifactError("Source file changed during import")
+            entry = self._entries.get(artifact_id)
+            if entry is None:
+                raise ArtifactError("Artifact import was interrupted")
+            descriptor = descriptor.model_copy(
+                update={"sha256": entry.digest.hexdigest()}
+            )
+            entry.begin = message.model_copy(update={"descriptor": descriptor})
+            self.complete(owner, message.transfer_id)
+            self.claim(owner, message.request_id, (descriptor,))
+            return descriptor
+        except (OSError, ValueError) as exc:
+            self.release(artifact_id)
+            raise ArtifactError("Cannot copy source artifact") from exc
+        except BaseException:
+            self.release(artifact_id)
+            raise
+        finally:
+            stream.close()
 
     def discard_request(self, owner: str, request_id: str) -> None:
         for artifact_id, entry in list(self._entries.items()):
@@ -199,7 +365,7 @@ class ArtifactStore:
 
     def close(self) -> None:
         for artifact_id in list(self._entries):
-            self.release(artifact_id)
+            self._delete(artifact_id)
         if self._directory is not None:
             self._directory.cleanup()
             self._directory = None

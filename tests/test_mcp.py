@@ -45,8 +45,10 @@ async def test_discovery_and_empty_adapter_list() -> None:
         assert [tool.name for tool in listed.tools] == [
             "tyvrana_list_adapters",
             "tyvrana_execute_operation",
+            "tyvrana_import_artifact",
+            "tyvrana_release_artifact",
         ]
-        discover, execute_tool = listed.tools
+        discover, execute_tool = listed.tools[:2]
         assert discover.input_schema["properties"] == {}
         assert discover.input_schema["additionalProperties"] is False
         assert execute_tool.input_schema["required"] == [
@@ -233,7 +235,11 @@ async def test_unexpected_failure_is_sanitized_and_logged_once(
     async with session() as (core, client):
 
         async def broken(
-            *, adapter_id: str, operation: str, arguments: JsonValue
+            *,
+            adapter_id: str,
+            operation: str,
+            arguments: JsonValue,
+            artifact_ids: tuple[str, ...] = (),
         ) -> JsonValue:
             raise RuntimeError("Private diagnostic")
 

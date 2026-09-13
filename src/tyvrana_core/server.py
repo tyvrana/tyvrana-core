@@ -9,8 +9,10 @@ from tyvrana_protocol import (
     AdapterEvent,
     AdapterRegistration,
     ArtifactAbort,
+    ArtifactAccepted,
     ArtifactBegin,
     ArtifactComplete,
+    ArtifactReady,
     Message,
     OperationFailure,
     OperationSuccess,
@@ -38,7 +40,7 @@ class AdapterServer:
         self.events = EventBroker()
         self.artifacts = ArtifactStore(self.config)
         self.dispatcher = OperationDispatcher(
-            self.registry, self.config.operation_timeout
+            self.registry, self.config.operation_timeout, self.artifacts
         )
         self._server: Server | None = None
         self._stopping = False
@@ -159,7 +161,14 @@ class AdapterServer:
                 elif isinstance(message, AdapterEvent):
                     self.events._publish(registration.instance_id, message)
                 elif isinstance(
-                    message, (ArtifactBegin, ArtifactComplete, ArtifactAbort)
+                    message,
+                    (
+                        ArtifactBegin,
+                        ArtifactComplete,
+                        ArtifactAbort,
+                        ArtifactReady,
+                        ArtifactAccepted,
+                    ),
                 ):
                     await connection.artifact(message)
                 else:

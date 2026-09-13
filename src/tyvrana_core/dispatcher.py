@@ -10,14 +10,21 @@ from tyvrana_protocol import (
     OperationSuccess,
 )
 
+from .artifacts import ArtifactStore
 from .errors import RemoteOperationError, UnsupportedOperation
 from .registry import AdapterRegistry
 
 
 class OperationDispatcher:
-    def __init__(self, registry: AdapterRegistry, default_timeout: float) -> None:
+    def __init__(
+        self,
+        registry: AdapterRegistry,
+        default_timeout: float,
+        artifacts: ArtifactStore,
+    ) -> None:
         self._registry = registry
         self._default_timeout = default_timeout
+        self._artifacts = artifacts
 
     @property
     def pending_count(self) -> int:
@@ -29,6 +36,7 @@ class OperationDispatcher:
         adapter_id: str,
         operation: str,
         arguments: JsonValue,
+        artifact_ids: tuple[str, ...] = (),
         timeout: float | None = None,
     ) -> OperationSuccess:
         """Execute an operation; cancelling the caller requests remote cancellation.
@@ -47,6 +55,9 @@ class OperationDispatcher:
             request_id=str(uuid4()),
             operation=operation,
             arguments=arguments,
+            artifacts=tuple(
+                self._artifacts.metadata(identifier) for identifier in artifact_ids
+            ),
         )
         response = await connection.request(request, limit)
         if isinstance(response, OperationFailure):

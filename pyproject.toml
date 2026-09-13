@@ -14,7 +14,7 @@ dependencies = [
     "anyio>=4.15.1",
     "mcp>=2.2.0",
     "pydantic>=2.13.5",
-    "tyvrana-protocol @ git+https://github.com/tyvrana/tyvrana-protocol.git@7fae352c9b137a92c505a0a39b8d0eeac1993700",
+    "tyvrana-protocol @ git+https://github.com/tyvrana/tyvrana-protocol.git@e394e95342ada9cb3a8dae5e68fd26302e8301c6",
     "websockets>=16.0",
 ]
 
