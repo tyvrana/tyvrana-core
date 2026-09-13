@@ -3,6 +3,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Literal
 
 import anyio
 import pytest
@@ -19,6 +20,7 @@ from tyvrana_protocol import (
 
 from tyvrana_core import AdapterServer, CoreConfig
 from tyvrana_core.mcp import create_mcp_server
+from tyvrana_core.mcp.server import INSTRUCTIONS
 
 from .helpers import adapter
 from .mcp_helpers import execute, failure
@@ -63,6 +65,49 @@ async def test_discovery_and_empty_adapter_list() -> None:
         result = await client.call_tool("tyvrana_list_adapters", {})
         assert not result.is_error
         assert result.structured_content == {"adapters": []}
+
+
+@pytest.mark.parametrize("mode", ["auto", "legacy"])
+async def test_agent_guidance_reaches_official_client(
+    mode: Literal["auto", "legacy"],
+) -> None:
+    core = AdapterServer(CoreConfig(port=0))
+    server = create_mcp_server(core)
+    assert server.create_initialization_options().instructions == INSTRUCTIONS
+    async with Client(server, mode=mode, raise_exceptions=True) as client:
+        assert client.instructions == INSTRUCTIONS
+        assert client.server_capabilities.prompts is None
+        assert len(INSTRUCTIONS) < 2500
+        for topic in (
+            "advertised operation",
+            "structured",
+            "visual verification",
+            "raycasting",
+            "snapshot",
+            "unrelated user state",
+            "partial mutation",
+            "Runtime validation",
+        ):
+            assert topic in " ".join(client.instructions.split())
+        descriptions = {
+            tool.name: tool.description or ""
+            for tool in (await client.list_tools()).tools
+        }
+        assert set(descriptions) == {
+            "tyvrana_list_adapters",
+            "tyvrana_execute_operation",
+            "tyvrana_import_artifact",
+            "tyvrana_release_artifact",
+        }
+        assert "currently connected" in descriptions["tyvrana_list_adapters"]
+        assert "arguments contract" in descriptions["tyvrana_execute_operation"]
+        assert "MCP tool errors" in descriptions["tyvrana_execute_operation"]
+        assert "artifact bytes" in descriptions["tyvrana_import_artifact"]
+        assert "source path" in descriptions["tyvrana_import_artifact"]
+        assert "temporary artifact" in descriptions["tyvrana_release_artifact"]
+        assert "blender." not in INSTRUCTIONS + " ".join(descriptions.values())
+    assert core.registry.list() == ()
+    assert core.events.subscriber_count == 0
 
 
 async def test_adapters_listed_with_metadata_in_deterministic_order() -> None:

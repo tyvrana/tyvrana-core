@@ -48,6 +48,17 @@ shuts down the listener, closes adapter connections and event subscriptions,
 fails pending operations, and joins outstanding work. Importing the MCP package
 does not start services.
 
+The server supplies concise AI-agent workflow instructions through MCP server
+instructions, alongside the generic tool descriptions and schemas. They cover
+discovery, structured inspection, typed operations, visual verification,
+reversible changes, surface targeting, snapshot-local indices, and recovery after
+possible partial mutation. Normal operation does not require a separate
+Tyvrana-specific instruction file. Exact presentation to the model depends on
+the MCP host; the official Python client's `instructions` property is tested
+through both discovery and initialization, including the stdio connection.
+Runtime validation, limits, and adapter safety checks remain enforced in code.
+No user-invoked MCP prompt templates are currently advertised.
+
 ### Tools
 
 Four tools are available. All publish Pydantic-generated input and output

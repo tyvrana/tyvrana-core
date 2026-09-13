@@ -21,6 +21,8 @@ from tyvrana_protocol import (
 )
 from websockets.asyncio.client import connect
 
+from tyvrana_core.mcp.server import INSTRUCTIONS
+
 from .helpers import FakeAdapter
 from .mcp_helpers import execute, failure
 
@@ -72,6 +74,7 @@ async def stdio_session(tmp_path: Path) -> AsyncIterator[tuple[Client, str]]:
         ) as client:
             assert client.server_info is not None
             assert client.server_info.name == "Tyvrana"
+            assert client.instructions == INSTRUCTIONS
             yield client, listening_uri(log_path.read_text())
     log = log_path.read_text()
     assert "Adapter server stopped" in log

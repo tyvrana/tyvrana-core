@@ -119,7 +119,10 @@ async def list_tools(
             Tool(
                 name="tyvrana_list_adapters",
                 description=(
-                    "List connected application adapters and advertised operations."
+                    "Discover currently connected applications before choosing an "
+                    "adapter. Returns adapter instance IDs, application metadata, "
+                    "and the operation names each adapter advertises. An empty list "
+                    "means no application adapter is connected."
                 ),
                 input_schema=ListAdaptersInput.model_json_schema(),
                 output_schema=ListAdaptersOutput.model_json_schema(
@@ -130,9 +133,12 @@ async def list_tools(
             Tool(
                 name="tyvrana_execute_operation",
                 description=(
-                    "Execute one advertised operation on a selected connected adapter "
-                    "using the core deadline. Optional artifact_ids attach complete "
-                    "core-owned inputs, transferred before the operation starts."
+                    "Execute one typed, advertised operation on one connected adapter "
+                    "using the core deadline. The arguments contract is specific to "
+                    "the selected application operation. Optional artifact_ids attach "
+                    "complete core-owned inputs, transferred before execution. "
+                    "Results may include artifacts and images; operation failures "
+                    "are returned as MCP tool errors."
                 ),
                 input_schema=ExecuteOperationInput.model_json_schema(),
                 output_schema=ExecuteOperationOutput.model_json_schema(
@@ -144,7 +150,9 @@ async def list_tools(
                 description=(
                     "Copy a local regular file into core-owned temporary storage. "
                     "The path is local to core and never sent to adapters. "
-                    "Returns a reusable artifact descriptor; release it when finished."
+                    "Adapters receive artifact bytes, not the source path. Returns "
+                    "a reusable artifact descriptor whose ID can be attached to "
+                    "operations; release it when finished."
                 ),
                 input_schema=ImportArtifactInput.model_json_schema(),
                 output_schema=ArtifactDescriptor.model_json_schema(
@@ -154,8 +162,9 @@ async def list_tools(
             Tool(
                 name="tyvrana_release_artifact",
                 description=(
-                    "Release a core-owned artifact. Idempotent; admitted transfers "
-                    "retain their bytes until finished."
+                    "Release a core-owned temporary artifact by ID when it is no "
+                    "longer needed. Idempotent; new uses are prevented, while "
+                    "already admitted transfers retain their bytes until finished."
                 ),
                 input_schema=ReleaseArtifactInput.model_json_schema(),
                 output_schema=ReleaseArtifactOutput.model_json_schema(),
