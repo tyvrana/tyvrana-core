@@ -7,6 +7,38 @@ from pydantic import TypeAdapter
 from tyvrana_protocol import JsonValue
 
 
+def assert_application_control_policy(instructions: str) -> None:
+    policy = " ".join(instructions.lower().split())
+    for required in (
+        "when a tyvrana adapter is connected for an application",
+        "all meaningful mutations",
+        "project/editor state must use tyvrana's advertised typed operations",
+        "do not bypass",
+        "report the capability gap",
+        "non-authoritative observation/window management",
+        "must not mutate project/editor state",
+        "source-code/file editing with software-development tools remains allowed",
+        "does not allow direct scene/asset/prefab state edits",
+        "compilation inspection",
+    ):
+        assert required in policy
+    for bypass in (
+        "computer use",
+        "mouse",
+        "keyboard",
+        "menus",
+        "shortcuts",
+        "gizmos",
+        "console commands",
+        "arbitrary scripts",
+        "direct application apis",
+        "another editor-control/mcp integration",
+    ):
+        assert bypass in policy
+    for specific in ("codex", "chatgpt", "blender", "unity", "unreal", "godot"):
+        assert specific not in policy
+
+
 def failure(result: CallToolResult) -> dict[str, JsonValue]:
     assert result.is_error
     assert result.structured_content is None

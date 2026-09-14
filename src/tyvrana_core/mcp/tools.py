@@ -122,7 +122,9 @@ async def list_tools(
                     "Discover currently connected applications before choosing an "
                     "adapter. Returns adapter instance IDs, application metadata, "
                     "and the operation names each adapter advertises. An empty list "
-                    "means no application adapter is connected."
+                    "means no application adapter is connected. Application mutations "
+                    "must use advertised typed operations. Report missing "
+                    "capabilities; do not bypass a connected adapter."
                 ),
                 input_schema=ListAdaptersInput.model_json_schema(),
                 output_schema=ListAdaptersOutput.model_json_schema(
@@ -138,7 +140,10 @@ async def list_tools(
                     "the selected application operation. Optional artifact_ids attach "
                     "complete core-owned inputs, transferred before execution. "
                     "Results may include artifacts and images; operation failures "
-                    "are returned as MCP tool errors."
+                    "are returned as MCP tool errors. Discover capabilities first with "
+                    "tyvrana_list_adapters. Application mutations must use these typed "
+                    "operations. Report missing capabilities; do not bypass a "
+                    "connected adapter."
                 ),
                 input_schema=ExecuteOperationInput.model_json_schema(),
                 output_schema=ExecuteOperationOutput.model_json_schema(

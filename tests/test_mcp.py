@@ -23,7 +23,7 @@ from tyvrana_core.mcp import create_mcp_server
 from tyvrana_core.mcp.server import INSTRUCTIONS
 
 from .helpers import adapter
-from .mcp_helpers import execute, failure
+from .mcp_helpers import assert_application_control_policy, execute, failure
 
 
 @asynccontextmanager
@@ -74,8 +74,10 @@ async def test_agent_guidance_reaches_official_client(
     core = AdapterServer(CoreConfig(port=0))
     server = create_mcp_server(core)
     assert server.create_initialization_options().instructions == INSTRUCTIONS
+    assert_application_control_policy(INSTRUCTIONS)
     async with Client(server, mode=mode, raise_exceptions=True) as client:
         assert client.instructions == INSTRUCTIONS
+        assert_application_control_policy(client.instructions)
         assert client.server_capabilities.prompts is None
         assert len(INSTRUCTIONS) < 2500
         for topic in (
@@ -100,12 +102,22 @@ async def test_agent_guidance_reaches_official_client(
             "tyvrana_release_artifact",
         }
         assert "currently connected" in descriptions["tyvrana_list_adapters"]
+        assert "advertises" in descriptions["tyvrana_list_adapters"]
+        assert "tyvrana_list_adapters" in descriptions["tyvrana_execute_operation"]
+        for name in ("tyvrana_list_adapters", "tyvrana_execute_operation"):
+            description = descriptions[name].lower()
+            assert "application mutations must use" in description
+            assert "typed operations" in description
+            assert "report missing capabilities" in description
+            assert "do not bypass a connected adapter" in description
+            assert len(description) < 1000
         assert "arguments contract" in descriptions["tyvrana_execute_operation"]
         assert "MCP tool errors" in descriptions["tyvrana_execute_operation"]
         assert "artifact bytes" in descriptions["tyvrana_import_artifact"]
         assert "source path" in descriptions["tyvrana_import_artifact"]
         assert "temporary artifact" in descriptions["tyvrana_release_artifact"]
-        assert "blender." not in INSTRUCTIONS + " ".join(descriptions.values())
+        for specific in ("codex", "chatgpt", "blender", "unity", "unreal", "godot"):
+            assert specific not in " ".join(descriptions.values()).lower()
     assert core.registry.list() == ()
     assert core.events.subscriber_count == 0
 

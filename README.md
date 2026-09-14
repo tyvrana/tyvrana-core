@@ -48,16 +48,36 @@ shuts down the listener, closes adapter connections and event subscriptions,
 fails pending operations, and joins outstanding work. Importing the MCP package
 does not start services.
 
-The server supplies concise AI-agent workflow instructions through MCP server
-instructions, alongside the generic tool descriptions and schemas. They cover
-discovery, structured inspection, typed operations, visual verification,
-reversible changes, surface targeting, snapshot-local indices, and recovery after
-possible partial mutation. Normal operation does not require a separate
-Tyvrana-specific instruction file. Exact presentation to the model depends on
-the MCP host; the official Python client's `instructions` property is tested
-through both discovery and initialization, including the stdio connection.
-Runtime validation, limits, and adapter safety checks remain enforced in code.
+### Application-control policy
+
+When an application has a connected Tyvrana adapter, all meaningful mutations of
+its project/editor state must use the adapter's advertised typed operations.
+Clients must discover connected adapters and their operations first. A missing
+operation is a capability gap to report, not permission to bypass Tyvrana through
+Computer Use, mouse/keyboard automation, menus, shortcuts, gizmos, editor consoles,
+arbitrary scripts, direct application APIs, or another editor-control integration.
+Necessary direct UI observation/window management is non-authoritative and must
+not mutate project/editor state.
+
+Normal source-code/file editing with software-development tools remains allowed;
+ordinary programming does not belong in editor RPC. Application-owned scene,
+asset and prefab mutations, editor/runtime actions, compilation inspection and
+screenshots use Tyvrana. The source-editing exception is not an alternative path
+for modifying application-owned scene or asset state.
+
+Every MCP client receives this AI-facing policy automatically in the server's
+initialization instructions, alongside tool descriptions and schemas. Users do
+not need a Tyvrana-specific `AGENTS.md` or prompt pack. Instructions also cover
+structured inspection, visual verification, reversible changes, surface targeting,
+snapshot-local indices and recovery after possible partial mutation. Exact
+presentation to the model depends on the MCP host; instruction delivery is tested
+with the official Python client, including stdio initialization and discovery.
 No user-invoked MCP prompt templates are currently advertised.
+
+This guidance does not technically prevent external clients from using other
+capabilities they possess. Operation validation, limits and adapter safety checks
+remain enforced in code. Provenance or external-mutation detection may be added
+if concrete workflow needs justify it; no such policing is currently implemented.
 
 ### Tools
 
