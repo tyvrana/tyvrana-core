@@ -24,7 +24,12 @@ from websockets.asyncio.client import connect
 from tyvrana_core.mcp.server import INSTRUCTIONS
 
 from .helpers import FakeAdapter, contract
-from .mcp_helpers import assert_application_control_policy, execute, failure
+from .mcp_helpers import (
+    assert_application_control_policy,
+    assert_workflow_guidance,
+    execute,
+    failure,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -109,6 +114,7 @@ async def test_stdio_initialization_discovery_execution_and_failures(
     async with stdio_session(tmp_path) as (client, uri):
         assert client.instructions is not None
         assert_application_control_policy(client.instructions)
+        assert_workflow_guidance(client.instructions)
         tools = await client.list_tools()
         assert [tool.name for tool in tools.tools] == [
             "tyvrana_list_adapters",

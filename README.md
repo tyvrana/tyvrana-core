@@ -74,6 +74,16 @@ presentation to the model depends on the MCP host; instruction delivery is teste
 with the official Python client, including stdio initialization and discovery.
 No user-invoked MCP prompt templates are currently advertised.
 
+Before meaningful mutation, initialization guidance asks the client to infer a
+professional workflow from the requested result, existing state, hidden structure,
+behavior, references, materials, downstream constraints and acceptance needs.
+Compact examples distinguish biological, mechanical, vehicle, environment and
+static-prop considerations without imposing a fixed recipe. Real-world correctness
+requires authoritative research and actual visual reference inspection when relevant.
+Capability gaps are reported; reusable tool development requires authorization.
+Semantic operations, cached contracts and bounded inspections keep interaction
+cost manageable. Workflow reasoning remains with the external AI client.
+
 This guidance does not technically prevent external clients from using other
 capabilities they possess. Operation validation, limits and adapter safety checks
 remain enforced in code. Provenance or external-mutation detection may be added

@@ -23,7 +23,12 @@ from tyvrana_core.mcp import create_mcp_server
 from tyvrana_core.mcp.server import INSTRUCTIONS
 
 from .helpers import adapter
-from .mcp_helpers import assert_application_control_policy, execute, failure
+from .mcp_helpers import (
+    assert_application_control_policy,
+    assert_workflow_guidance,
+    execute,
+    failure,
+)
 
 
 @asynccontextmanager
@@ -79,8 +84,9 @@ async def test_agent_guidance_reaches_official_client(
     async with Client(server, mode=mode, raise_exceptions=True) as client:
         assert client.instructions == INSTRUCTIONS
         assert_application_control_policy(client.instructions)
+        assert_workflow_guidance(client.instructions)
         assert client.server_capabilities.prompts is None
-        assert len(INSTRUCTIONS) < 2500
+        assert len(INSTRUCTIONS.encode()) < 5500
         for topic in (
             "advertised operation",
             "structured",

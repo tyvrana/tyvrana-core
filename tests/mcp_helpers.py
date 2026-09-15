@@ -7,6 +7,27 @@ from pydantic import TypeAdapter
 from tyvrana_protocol import JsonValue
 
 
+def assert_workflow_guidance(instructions: str) -> None:
+    """Check durable decisions, not one verbatim instruction paragraph."""
+    guidance = " ".join(instructions.lower().split())
+    concepts = (
+        ("before", "mutation", "requested result", "current state"),
+        ("infer", "workflow", "dependencies", "hidden/internal"),
+        ("motion", "deformation", "assembly", "acceptance"),
+        ("references", "measurements", "materials", "downstream", "runtime"),
+        ("authoritative", "actually inspect", "images", "diagrams"),
+        ("discover", "typed tyvrana", "capabilities"),
+        ("tyvrana capability gap", "authorized development", "unsupported"),
+        ("do not bypass", "arbitrary scripts", "source-development permission"),
+        ("batched", "filtered", "bounded", "comparison", "argument guessing"),
+        ("biology", "birds", "arthropods", "mechanical", "vehicles", "buildings"),
+        ("static props", "not a fixed pipeline", "external ai"),
+    )
+    for concept in concepts:
+        assert all(term in guidance for term in concept), concept
+    assert len(instructions.encode()) < 5500
+
+
 def assert_application_control_policy(instructions: str) -> None:
     policy = " ".join(instructions.lower().split())
     for required in (
