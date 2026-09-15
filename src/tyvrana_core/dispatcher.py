@@ -48,7 +48,7 @@ class OperationDispatcher:
         if not math.isfinite(limit) or limit <= 0:
             raise ValueError("Operation timeout must be positive and finite")
         connection = self._registry._get_connection(adapter_id)
-        if operation not in connection.registration.operations:
+        if operation not in connection.registration.operation_names:
             raise UnsupportedOperation(adapter_id, operation)
         request = OperationRequest(
             type="operation.request",

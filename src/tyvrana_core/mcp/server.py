@@ -11,8 +11,10 @@ from ..server import AdapterServer
 from .tools import call_tool, list_tools
 
 INSTRUCTIONS = """Tyvrana controls connected professional applications through adapters.
-List connected adapters first to discover their advertised operations; do not
-assume an application or unsupported operation is available.
+List connected adapters, then retrieve needed contracts with tyvrana_list_operations.
+Use only advertised operations. Cache contracts by catalog hash.
+Use discovery waits during connection/reload.
+Do not assume an application or unsupported operation is available.
 
 When a Tyvrana adapter is connected for an application, all meaningful mutations
 of that application's project/editor state must use Tyvrana's advertised typed

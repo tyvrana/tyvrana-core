@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+from typing import Literal
 
 import anyio
 from mcp.server import ServerRequestContext
@@ -45,7 +46,12 @@ class _ToolModel(BaseModel):
 
 
 class ListAdaptersInput(_ToolModel):
-    """Discovery takes no arguments."""
+    """Filter discovery and optionally wait for registration or a revision change."""
+
+    application: str | None = Field(default=None, min_length=1, max_length=256)
+    adapter_id: Identifier | None = None
+    wait_seconds: float = Field(default=0.0, ge=0, le=30, allow_inf_nan=False)
+    after_revision: int | None = Field(default=None, ge=0)
 
 
 class AdapterSummary(_ToolModel):
@@ -55,11 +61,53 @@ class AdapterSummary(_ToolModel):
         default=None, exclude_if=lambda v: v is None
     )
     project_path: str | None = Field(default=None, exclude_if=lambda v: v is None)
-    operations: tuple[QualifiedName, ...]
+    operation_count: int
+    catalog_sha256: str
 
 
 class ListAdaptersOutput(_ToolModel):
     adapters: tuple[AdapterSummary, ...]
+    revision: int
+
+
+class ListOperationsInput(_ToolModel):
+    adapter_id: Identifier
+    names: list[QualifiedName] | None = Field(default=None, min_length=1, max_length=16)
+    prefix: str = Field(default="", max_length=128)
+    offset: int = Field(default=0, ge=0, le=512)
+    limit: int = Field(default=20, ge=1, le=50)
+    include_schemas: bool = False
+
+    @field_validator("names")
+    @classmethod
+    def unique_names(cls, names: list[str] | None) -> list[str] | None:
+        if names is not None and len(set(names)) != len(names):
+            raise ValueError("Operation names must be unique")
+        return names
+
+
+class DiscoveredOperation(_ToolModel):
+    name: QualifiedName
+    description: str
+    effect: Literal["read_only", "mutating", "transient", "lifecycle"]
+    execution: Literal["synchronous", "job_start", "job_status", "lifecycle"]
+    requires_interactive: bool
+    input_artifacts: Literal["none", "required"]
+    output_artifacts: Literal["none", "optional", "required"]
+    arguments_schema: dict[str, JsonValue] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    result_schema: dict[str, JsonValue] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+
+
+class ListOperationsOutput(_ToolModel):
+    adapter_id: Identifier
+    catalog_sha256: str
+    matched_count: int
+    next_offset: int | None
+    operations: tuple[DiscoveredOperation, ...]
 
 
 class ExecuteOperationInput(_ToolModel):
@@ -121,13 +169,37 @@ async def list_tools(
                 description=(
                     "Discover currently connected applications before choosing an "
                     "adapter. Returns adapter instance IDs, application metadata, "
-                    "and the operation names each adapter advertises. An empty list "
+                    "and a cacheable operation catalog hash/count. Filter by "
+                    "application "
+                    "or adapter_id. wait_seconds waits for a match, or with "
+                    "after_revision "
+                    "for a registry change, without client polling. An empty list "
                     "means no application adapter is connected. Application mutations "
                     "must use advertised typed operations. Report missing "
                     "capabilities; do not bypass a connected adapter."
                 ),
                 input_schema=ListAdaptersInput.model_json_schema(),
                 output_schema=ListAdaptersOutput.model_json_schema(
+                    mode="serialization"
+                ),
+                annotations=ToolAnnotations(read_only_hint=True),
+            ),
+            Tool(
+                name="tyvrana_list_operations",
+                description=(
+                    "Discover selected operation contracts from a connected adapter. "
+                    "Filter exact names or prefix; results are sorted and paginated. "
+                    "Descriptions include effect, execution/context and artifact "
+                    "behavior. "
+                    "Set include_schemas for self-contained argument/result "
+                    "JSON Schemas "
+                    "(at most four contracts per page). Cache by catalog_sha256; "
+                    "request "
+                    "schemas before constructing arguments, preserve omitted fields, "
+                    "and do not infer native state constraints from schema alone."
+                ),
+                input_schema=ListOperationsInput.model_json_schema(),
+                output_schema=ListOperationsOutput.model_json_schema(
                     mode="serialization"
                 ),
                 annotations=ToolAnnotations(read_only_hint=True),
@@ -141,7 +213,8 @@ async def list_tools(
                     "complete core-owned inputs, transferred before execution. "
                     "Results may include artifacts and images; operation failures "
                     "are returned as MCP tool errors. Discover capabilities first with "
-                    "tyvrana_list_adapters. Application mutations must use these typed "
+                    "tyvrana_list_adapters, then tyvrana_list_operations for schemas. "
+                    "Application mutations must use these typed "
                     "operations. Report missing capabilities; do not bypass a "
                     "connected adapter."
                 ),
@@ -186,10 +259,14 @@ def _success(output: BaseModel) -> CallToolResult:
     )
 
 
-def _failure(code: str, message: str, details: JsonValue = None) -> CallToolResult:
+def _failure(
+    code: str, message: str, details: JsonValue = None, operation: str | None = None
+) -> CallToolResult:
     error: dict[str, JsonValue] = {"code": code, "message": message}
     if details is not None:
         error["details"] = details
+    if operation is not None:
+        error["operation"] = operation
     return CallToolResult(
         is_error=True,
         content=[
@@ -209,9 +286,12 @@ def _core_failure(
     | RemoteOperationError
     | OperationTimeout
     | AdapterDisconnected,
+    operation: str | None = None,
 ) -> CallToolResult:
     if isinstance(error, RemoteOperationError):
-        return _failure(error.error.code, error.error.message, error.error.details)
+        return _failure(
+            error.error.code, error.error.message, error.error.details, operation
+        )
     if isinstance(error, AdapterNotFound):
         code = "adapter_not_found"
     elif isinstance(error, UnsupportedOperation):
@@ -220,7 +300,7 @@ def _core_failure(
         code = "operation_timeout"
     else:
         code = "adapter_disconnected"
-    return _failure(code, str(error))
+    return _failure(code, str(error), operation=operation)
 
 
 async def _execute(
@@ -286,6 +366,81 @@ def _operation_success(
             core.artifacts.release(descriptor.artifact_id)
 
 
+async def _adapters(
+    core: AdapterServer, request: ListAdaptersInput
+) -> ListAdaptersOutput:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + request.wait_seconds
+    while True:
+        revision = core.registry.revision
+        infos = [
+            info
+            for info in core.registry.list()
+            if (
+                request.application is None
+                or info.registration.application == request.application
+            )
+            and (request.adapter_id is None or info.instance_id == request.adapter_id)
+        ]
+        ready = (
+            (revision != request.after_revision)
+            if request.after_revision is not None
+            else bool(infos)
+        )
+        remaining = deadline - loop.time()
+        if ready or remaining <= 0:
+            return ListAdaptersOutput(
+                adapters=tuple(
+                    AdapterSummary(
+                        instance_id=info.instance_id,
+                        application=info.registration.application,
+                        application_version=info.registration.application_version,
+                        project_path=info.registration.project_path,
+                        operation_count=len(info.registration.operations),
+                        catalog_sha256=info.catalog_sha256,
+                    )
+                    for info in sorted(infos, key=lambda item: item.instance_id)
+                ),
+                revision=revision,
+            )
+        await core.registry.wait_for_change(revision, remaining)
+
+
+def _operations(
+    core: AdapterServer, request: ListOperationsInput
+) -> ListOperationsOutput:
+    info = core.registry.get(request.adapter_id)
+    available = {item.name: item for item in info.registration.operations}
+    if request.names is not None:
+        missing = sorted(set(request.names) - available.keys())
+        if missing:
+            raise UnsupportedOperation(request.adapter_id, missing[0])
+    selected = sorted(
+        (
+            item
+            for item in available.values()
+            if (request.names is None or item.name in request.names)
+            and item.name.startswith(request.prefix)
+        ),
+        key=lambda item: item.name,
+    )
+    limit = min(request.limit, 4) if request.include_schemas else request.limit
+    end = request.offset + limit
+    excluded = (
+        set() if request.include_schemas else {"arguments_schema", "result_schema"}
+    )
+    return ListOperationsOutput(
+        adapter_id=request.adapter_id,
+        catalog_sha256=info.catalog_sha256,
+        matched_count=len(selected),
+        next_offset=end if end < len(selected) else None,
+        operations=tuple(
+            DiscoveredOperation.model_validate(item.model_dump(exclude=excluded))
+            for item in selected[request.offset : end]
+        ),
+    )
+
+
 async def call_tool(
     ctx: ServerRequestContext[AdapterServer], params: CallToolRequestParams
 ) -> CallToolResult:
@@ -295,11 +450,14 @@ async def call_tool(
         request: (
             ListAdaptersInput
             | ExecuteOperationInput
+            | ListOperationsInput
             | ImportArtifactInput
             | ReleaseArtifactInput
         )
         if params.name == "tyvrana_list_adapters":
             request = ListAdaptersInput.model_validate(arguments)
+        elif params.name == "tyvrana_list_operations":
+            request = ListOperationsInput.model_validate(arguments)
         elif params.name == "tyvrana_execute_operation":
             request = ExecuteOperationInput.model_validate(arguments)
         elif params.name == "tyvrana_import_artifact":
@@ -311,12 +469,13 @@ async def call_tool(
     except ValidationError as exc:
         details: list[JsonValue] = [
             {
-                "field": ".".join(str(part) for part in error["loc"]),
-                "message": str(error["msg"]),
+                "field": ".".join(str(part) for part in error["loc"])[:500],
+                "message": str(error["msg"])[:500],
+                "reason": str(error["type"]),
             }
             for error in exc.errors(
                 include_input=False, include_context=False, include_url=False
-            )
+            )[:8]
         ]
         return _failure("invalid_arguments", "Invalid tool arguments", details)
     try:
@@ -335,19 +494,9 @@ async def call_tool(
                 )
             )
         if isinstance(request, ListAdaptersInput):
-            adapters = tuple(
-                AdapterSummary(
-                    instance_id=info.instance_id,
-                    application=info.registration.application,
-                    application_version=info.registration.application_version,
-                    project_path=info.registration.project_path,
-                    operations=tuple(sorted(info.registration.operations)),
-                )
-                for info in sorted(
-                    core.registry.list(), key=lambda info: info.instance_id
-                )
-            )
-            return _success(ListAdaptersOutput(adapters=adapters))
+            return _success(await _adapters(core, request))
+        if isinstance(request, ListOperationsInput):
+            return _success(_operations(core, request))
         return _operation_success(core, await _execute(core, request))
     except ArtifactError as exc:
         return _failure("artifact_transfer_failed", str(exc))
@@ -358,7 +507,10 @@ async def call_tool(
         OperationTimeout,
         AdapterDisconnected,
     ) as exc:
-        return _core_failure(exc)
+        return _core_failure(
+            exc,
+            request.operation if isinstance(request, ExecuteOperationInput) else None,
+        )
     except Exception:
         logger.exception("Unexpected failure in MCP tool %s", params.name)
         return _failure("internal_error", "Tool execution failed; see the server logs.")

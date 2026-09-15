@@ -46,12 +46,13 @@ async def test_discovery_and_empty_adapter_list() -> None:
         listed = await client.list_tools()
         assert [tool.name for tool in listed.tools] == [
             "tyvrana_list_adapters",
+            "tyvrana_list_operations",
             "tyvrana_execute_operation",
             "tyvrana_import_artifact",
             "tyvrana_release_artifact",
         ]
-        discover, execute_tool = listed.tools[:2]
-        assert discover.input_schema["properties"] == {}
+        discover, _, execute_tool = listed.tools[:3]
+        assert "wait_seconds" in discover.input_schema["properties"]
         assert discover.input_schema["additionalProperties"] is False
         assert execute_tool.input_schema["required"] == [
             "adapter_id",
@@ -64,7 +65,7 @@ async def test_discovery_and_empty_adapter_list() -> None:
         assert "$defs" in execute_tool.input_schema
         result = await client.call_tool("tyvrana_list_adapters", {})
         assert not result.is_error
-        assert result.structured_content == {"adapters": []}
+        assert result.structured_content == {"adapters": [], "revision": 0}
 
 
 @pytest.mark.parametrize("mode", ["auto", "legacy"])
@@ -97,12 +98,13 @@ async def test_agent_guidance_reaches_official_client(
         }
         assert set(descriptions) == {
             "tyvrana_list_adapters",
+            "tyvrana_list_operations",
             "tyvrana_execute_operation",
             "tyvrana_import_artifact",
             "tyvrana_release_artifact",
         }
         assert "currently connected" in descriptions["tyvrana_list_adapters"]
-        assert "advertises" in descriptions["tyvrana_list_adapters"]
+        assert "catalog" in descriptions["tyvrana_list_adapters"]
         assert "tyvrana_list_adapters" in descriptions["tyvrana_execute_operation"]
         for name in ("tyvrana_list_adapters", "tyvrana_execute_operation"):
             description = descriptions[name].lower()
@@ -137,24 +139,24 @@ async def test_adapters_listed_with_metadata_in_deterministic_order() -> None:
                         "application": "Example Editor",
                         "application_version": "2026.9",
                         "project_path": "projects/example.project",
-                        "operations": ["asset.describe", "document.inspect"],
+                        "operation_count": 2,
+                        "catalog_sha256": core.registry.get("a-first").catalog_sha256,
                     },
                     {
                         "instance_id": "z-last",
                         "application": "Example Editor",
                         "application_version": "2026.9",
                         "project_path": "projects/example.project",
-                        "operations": ["document.inspect"],
+                        "operation_count": 1,
+                        "catalog_sha256": core.registry.get("z-last").catalog_sha256,
                     },
-                ]
+                ],
+                "revision": 2,
             }
-            result.structured_content["adapters"][0]["operations"].clear()
+            result.structured_content["adapters"][0]["operation_count"] = 0
             again = await client.call_tool("tyvrana_list_adapters")
-            assert again.structured_content["adapters"][0]["operations"] == [
-                "asset.describe",
-                "document.inspect",
-            ]
-            assert core.registry.get("a-first").registration.operations == (
+            assert again.structured_content["adapters"][0]["operation_count"] == 2
+            assert core.registry.get("a-first").registration.operation_names == (
                 "document.inspect",
                 "asset.describe",
             )
@@ -218,7 +220,10 @@ async def test_remote_error_preserves_code_message_details_without_traceback(
                     type="operation.failure", request_id=request.request_id, error=error
                 )
             )
-            assert failure(await task) == error.model_dump(mode="json")
+            assert failure(await task) == {
+                **error.model_dump(mode="json"),
+                "operation": "document.inspect",
+            }
             assert all(record.exc_info is None for record in caplog.records)
 
 

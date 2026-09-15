@@ -7,6 +7,7 @@ from tyvrana_protocol import (
     AdapterRegistration,
     JsonValue,
     Message,
+    OperationContract,
     OperationSuccess,
     decode_message,
     encode_message,
@@ -14,6 +15,17 @@ from tyvrana_protocol import (
 from websockets.asyncio.client import ClientConnection, connect
 
 from tyvrana_core import AdapterServer
+
+
+def contract(name: str) -> OperationContract:
+    return OperationContract(
+        name=name,
+        description="Inspect example state.",
+        arguments_schema={"type": "object", "additionalProperties": False},
+        result_schema={"type": "object"},
+        effect="read_only",
+        execution="synchronous",
+    )
 
 
 async def eventually(predicate: Callable[[], bool]) -> None:
@@ -53,7 +65,7 @@ async def adapter(
                     application="Example Editor",
                     application_version="2026.9",
                     project_path="projects/example.project",
-                    operations=operations,
+                    operations=tuple(contract(name) for name in operations),
                 ),
             )
             # An event after registration is a deterministic receive-loop barrier.

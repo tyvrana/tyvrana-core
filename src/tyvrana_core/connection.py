@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 from typing import BinaryIO
 from uuid import uuid4
@@ -51,6 +52,19 @@ class AdapterConnection:
         artifacts: ArtifactStore,
     ) -> None:
         self.registration = registration
+        self.catalog_sha256 = hashlib.sha256(
+            json.dumps(
+                [
+                    item.model_dump(mode="json")
+                    for item in sorted(
+                        registration.operations, key=lambda item: item.name
+                    )
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
         self._websocket = websocket
         self._send_timeout = send_timeout
         self._disconnected = False

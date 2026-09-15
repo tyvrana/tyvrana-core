@@ -44,7 +44,7 @@ async def test_registration_metadata_and_disconnect(
         assert info.registration.application == "Example Editor"
         assert info.registration.application_version == "2026.9"
         assert info.registration.project_path == "projects/example.project"
-        assert info.registration.operations == ("document.inspect",)
+        assert info.registration.operation_names == ("document.inspect",)
         assert server.registry.list() == (info,)
         assert server.registry.supporting("document.inspect") == (info,)
         assert server.registry.supporting("missing.operation") == ()

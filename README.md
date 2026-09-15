@@ -81,30 +81,65 @@ if concrete workflow needs justify it; no such policing is currently implemented
 
 ### Tools
 
-Four tools are available. All publish Pydantic-generated input and output
+Five tools are available. All publish Pydantic-generated input and output
 JSON schemas and reject unexpected input fields. Successful responses provide
 the object below as MCP `structuredContent` and as JSON in a text content block.
 
-`tyvrana_list_adapters` takes `{}` (arguments may also be omitted) and returns:
+`tyvrana_list_adapters` accepts optional `application` and `adapter_id` filters,
+`wait_seconds` (0–30, default 0), and `after_revision`. Without a revision it waits
+for a matching adapter. With a revision it waits for any registry change, then
+returns the filtered snapshot; an unrelated registration can also wake the wait.
+An empty result after the deadline is valid. Waiting is cancellable and uses
+registry notifications rather than periodic polling.
 
 ```json
 {
-  "adapters": [
-    {
-      "instance_id": "example-editor",
-      "application": "Example Editor",
-      "application_version": "2026.9",
-      "project_path": "projects/example.project",
-      "operations": ["document.inspect"]
-    }
-  ]
+  "adapters": [{
+    "instance_id": "example-editor",
+    "application": "Example Editor",
+    "application_version": "2026.9",
+    "project_path": "projects/example.project",
+    "operation_count": 1,
+    "catalog_sha256": "<SHA-256 of canonical operation contracts>"
+  }],
+  "revision": 1
 }
 ```
 
-`application_version` and `project_path` are omitted when the adapter did not
-supply them. Adapters are sorted by instance ID and operations by name. With no
-connected adapters the result is `{"adapters": []}`. Results are independent
-snapshots of connected adapter metadata.
+Optional application metadata is omitted when absent. Adapters sort by instance
+ID. Registry revisions are local to the running core; restart invalidates them.
+Catalog hashes are independent of adapter identity and declaration order and
+change when a contract changes. Cache contracts by hash across reconnections.
+
+`tyvrana_list_operations` retrieves contracts from a connected adapter:
+
+```json
+{
+  "adapter_id": "example-editor",
+  "names": ["document.inspect"],
+  "include_schemas": true
+}
+```
+
+Exact `names` (1–16 unique names) and `prefix` intersect. Unknown exact names fail
+explicitly. Results contain `adapter_id`, `catalog_sha256`, `matched_count`,
+`next_offset` and sorted `operations`. Each operation has its qualified name,
+description, effect, execution mode, interactive-context requirement and artifact
+behavior. With `include_schemas: true`, self-contained `arguments_schema` and
+`result_schema` are included. Otherwise schemas are omitted. `offset` starts at
+zero; `limit` defaults to 20 with a maximum of 50 summaries or four detailed
+contracts per page. Follow `next_offset` until null. Fetch only needed schemas;
+requesting the complete detailed catalog is usually unnecessary.
+
+The schema exposes structural types, enums, bounds and defaults. Preserve omitted
+fields in partial updates; materializing every default can change operation intent.
+Native state and cross-field constraints still require adapter validation.
+Execution modes distinguish synchronous operations, job starts/status queries
+and lifecycle transitions. Effects distinguish read-only, mutating, transient
+state and lifecycle work. Metadata describes behavior; it is not authorization
+or a guarantee of rollback. `requires_interactive` identifies operations that
+always need an interactive host; individual options can impose further context
+requirements described by their contract.
 
 `tyvrana_execute_operation` requires these three fields:
 
@@ -214,7 +249,9 @@ tool response, and does not guarantee that the application stopped its work.
 
 An adapter sends `AdapterRegistration` as its first WebSocket message within five
 seconds. Core stores its instance ID, application metadata, optional project path,
-and advertised operations. A duplicate active instance ID is rejected without
+and typed operation contracts. Core caches their canonical SHA-256 once at
+registration; it does not interpret application schemas or execute application
+logic. A duplicate active instance ID is rejected without
 disturbing the original connection. IDs can be reused after disconnection.
 
 Each WebSocket text message contains exactly one canonical protocol JSON control

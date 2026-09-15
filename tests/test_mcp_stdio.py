@@ -23,7 +23,7 @@ from websockets.asyncio.client import connect
 
 from tyvrana_core.mcp.server import INSTRUCTIONS
 
-from .helpers import FakeAdapter
+from .helpers import FakeAdapter, contract
 from .mcp_helpers import assert_application_control_policy, execute, failure
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,23 +91,16 @@ async def register(fake: FakeAdapter, client: Client) -> None:
             type="adapter.register",
             instance_id="adapter-a",
             application="Example",
-            operations=("document.inspect",),
+            operations=(contract("document.inspect"),),
         )
     )
-    async with asyncio.timeout(3):
-        while True:
-            result = await client.call_tool("tyvrana_list_adapters")
-            if result.structured_content["adapters"]:
-                assert result.structured_content == {
-                    "adapters": [
-                        {
-                            "instance_id": "adapter-a",
-                            "application": "Example",
-                            "operations": ["document.inspect"],
-                        }
-                    ]
-                }
-                return
+    result = await client.call_tool("tyvrana_list_adapters", {"wait_seconds": 2})
+    assert not result.is_error
+    summary = result.structured_content["adapters"][0]
+    assert summary["instance_id"] == "adapter-a"
+    assert summary["application"] == "Example"
+    assert summary["operation_count"] == 1
+    assert len(summary["catalog_sha256"]) == 64
 
 
 async def test_stdio_initialization_discovery_execution_and_failures(
@@ -119,12 +112,14 @@ async def test_stdio_initialization_discovery_execution_and_failures(
         tools = await client.list_tools()
         assert [tool.name for tool in tools.tools] == [
             "tyvrana_list_adapters",
+            "tyvrana_list_operations",
             "tyvrana_execute_operation",
             "tyvrana_import_artifact",
             "tyvrana_release_artifact",
         ]
         assert (await client.call_tool("tyvrana_list_adapters")).structured_content == {
-            "adapters": []
+            "adapters": [],
+            "revision": 0,
         }
         assert failure(await execute(client))["code"] == "adapter_not_found"
         async with connect(uri, proxy=None) as websocket:
@@ -158,6 +153,7 @@ async def test_stdio_initialization_discovery_execution_and_failures(
             )
             assert failure(await failed) == {
                 "code": "custom.failure",
+                "operation": "document.inspect",
                 "message": "Could not complete",
                 "details": {"reason": "example"},
             }
