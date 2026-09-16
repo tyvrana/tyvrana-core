@@ -12,7 +12,7 @@ class CoreConfig(BaseModel):
     operation_timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     send_timeout: float = Field(default=5.0, gt=0, allow_inf_nan=False)
     close_timeout: float = Field(default=2.0, gt=0, allow_inf_nan=False)
-    max_message_size: int = Field(default=1_048_576, gt=0)
+    max_message_size: int = Field(default=4 * 1024 * 1024, gt=0)
     max_artifact_size: int = Field(default=128 * 1024 * 1024, gt=0)
     max_artifact_storage: int = Field(default=512 * 1024 * 1024, gt=0)
     max_artifact_entries: int = Field(default=128, gt=0)

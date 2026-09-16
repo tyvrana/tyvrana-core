@@ -3,6 +3,7 @@ import logging
 
 import pytest
 from tyvrana_protocol import (
+    AdapterEvent,
     AdapterRegistration,
     CancelRequest,
     OperationRequest,
@@ -15,7 +16,7 @@ from websockets.typing import Origin
 
 from tyvrana_core import AdapterServer, CoreConfig
 
-from .helpers import adapter, eventually
+from .helpers import adapter, contract, eventually
 
 
 async def test_server_lifecycle_and_repeated_start_stop() -> None:
@@ -301,3 +302,36 @@ async def test_failed_bind_can_be_retried() -> None:
     async with second:
         async with adapter(second):
             assert second.registry.get("adapter-a").connected
+
+
+async def test_large_catalog_respects_default_frame_budget() -> None:
+    message = AdapterRegistration(
+        type="adapter.register",
+        instance_id="large-catalog",
+        application="Example Editor",
+        operations=tuple(
+            contract(f"document.inspect_{i}").model_copy(
+                update={
+                    "arguments_schema": {"type": "object", "description": "x" * 100000}
+                }
+            )
+            for i in range(20)
+        ),
+    )
+    wire = encode_message(message)
+    assert len(wire) > 1024 * 1024
+    async with AdapterServer(CoreConfig(port=0)) as server:
+        async with connect(server.uri, proxy=None) as socket:
+            await socket.send(wire.decode())
+            with server.events.subscribe() as events:
+                await socket.send(
+                    encode_message(
+                        AdapterEvent(
+                            type="adapter.event", event="catalog.ready", payload=None
+                        )
+                    ).decode()
+                )
+                async with asyncio.timeout(3):
+                    await anext(events)
+            assert server.registry.get("large-catalog").registration == message
+        assert len(wire) < server.config.max_message_size

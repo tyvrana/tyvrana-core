@@ -10,7 +10,7 @@ def test_defaults_are_local_and_bounded() -> None:
     assert 0 < config.port < 65536
     assert config.registration_timeout > 0
     assert config.operation_timeout > 0
-    assert config.max_message_size == 1_048_576
+    assert config.max_message_size == 4 * 1024 * 1024
     assert CoreConfig(port=0).port == 0
 
 

@@ -290,7 +290,7 @@ its requests.
 | `operation_timeout` | 30 seconds |
 | `send_timeout` | 5 seconds |
 | `close_timeout` | 2 seconds |
-| `max_message_size` | 1 MiB |
+| `max_message_size` | 4 MiB |
 | `max_artifact_size` | 128 MiB per artifact |
 | `max_artifact_storage` | 512 MiB reserved + completed across the runtime |
 | `max_artifact_entries` | 128 reserved + completed across the runtime |
