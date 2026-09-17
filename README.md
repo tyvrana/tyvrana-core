@@ -37,9 +37,9 @@ uv run --locked tyvrana-core mcp
 
 MCP mode runs one process: the official MCP Python SDK serves stdin/stdout while
 the adapter WebSocket server listens concurrently at `ws://127.0.0.1:8765`.
-Both modes accept `--host` and `--port` for the adapter listener. Use
+All modes accept `--host` and `--port` for the adapter listener. Use
 `uv run --locked tyvrana-core mcp --help` for MCP mode options. The CLI requires
-an explicit `serve` or `mcp` subcommand.
+an explicit `serve`, `mcp` or `mcp-http` subcommand.
 
 Normal logs go to stderr. In MCP mode, stdout contains only MCP transport data.
 The MCP lifespan starts the existing `AdapterServer`, which owns the registry,
@@ -47,6 +47,27 @@ dispatcher, event broker, and temporary artifact store. Session exit, stdin clos
 shuts down the listener, closes adapter connections and event subscriptions,
 fails pending operations, and joins outstanding work. Importing the MCP package
 does not start services.
+
+### Shared local MCP service
+
+For independent clients or conversations connecting to the same running
+application, start one core process independently of the clients:
+
+```sh
+uv run --locked tyvrana-core mcp-http
+```
+
+Connect an MCP Streamable HTTP client to `http://127.0.0.1:8766/mcp/`.
+`--mcp-port` changes the HTTP port; `--port` still selects the adapter port.
+The HTTP listener binds only to loopback and validates local Host/Origin headers.
+It provides the same tools, instructions, artifacts and project state as stdio.
+Each client has its own MCP session; disconnecting a client leaves core and its
+application connections running. Ctrl+C or SIGTERM stops the shared service and
+cleans up core-owned resources. Run only one core listener per adapter endpoint;
+do not launch a competing stdio core on the same adapter port.
+
+This is a local service for trusted clients on the same machine, without remote
+authentication or a public-network deployment mode.
 
 ### Application-control policy
 

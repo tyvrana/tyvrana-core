@@ -19,8 +19,13 @@ async def _serve(core: AdapterServer) -> None:
         await asyncio.Event().wait()
 
 
-async def _run(config: CoreConfig, mode: str) -> None:
+async def _run(config: CoreConfig, mode: str, mcp_port: int = 8766) -> None:
     core = AdapterServer(config)
+    if mode == "mcp-http":
+        from .mcp.http import run_http
+
+        await run_http(core, mcp_port)
+        return
     work = asyncio.create_task(run_stdio(core) if mode == "mcp" else _serve(core))
     loop = asyncio.get_running_loop()
     installed: list[signal.Signals] = []
@@ -51,13 +56,14 @@ async def _run(config: CoreConfig, mode: str) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Run Tyvrana core with a manual listener or MCP stdio."
+        description="Run Tyvrana core with a manual listener or local MCP transport."
     )
     defaults = CoreConfig()
     modes = parser.add_subparsers(dest="mode", required=True)
     for name, help_text in (
         ("serve", "Run the adapter WebSocket server"),
         ("mcp", "Run MCP stdio and the adapter WebSocket server"),
+        ("mcp-http", "Share core with independent local MCP HTTP clients"),
     ):
         mode = modes.add_parser(name, help=help_text)
         mode.add_argument(
@@ -76,7 +82,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             default=defaults.state_directory,
             help="Local durable semantic project store directory",
         )
+        if name == "mcp-http":
+            mode.add_argument(
+                "--mcp-port", type=int, default=8766, help="Loopback MCP HTTP port"
+            )
     args = parser.parse_args(argv)
+    if args.mode == "mcp-http" and not 0 <= args.mcp_port <= 65535:
+        parser.error("--mcp-port must be between 0 and 65535")
     try:
         config = CoreConfig(
             host=args.host, port=args.port, state_directory=args.state_directory
@@ -90,7 +102,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         force=True,
     )
     try:
-        asyncio.run(_run(config, args.mode))
+        asyncio.run(_run(config, args.mode, getattr(args, "mcp_port", 8766)))
     except KeyboardInterrupt:
         pass
     except OSError as exc:
