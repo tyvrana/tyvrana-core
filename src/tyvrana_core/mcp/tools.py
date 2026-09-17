@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from typing import Literal
 
 import anyio
@@ -74,9 +75,22 @@ class ListOperationsInput(_ToolModel):
     adapter_id: Identifier
     names: list[QualifiedName] | None = Field(default=None, min_length=1, max_length=16)
     prefix: str = Field(default="", max_length=128)
+    query: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        description="Search name/description terms; any match, most terms first.",
+    )
     offset: int = Field(default=0, ge=0, le=512)
     limit: int = Field(default=20, ge=1, le=50)
     include_schemas: bool = False
+
+    @field_validator("query")
+    @classmethod
+    def searchable_query(cls, query: str | None) -> str | None:
+        if query is not None and not any(character.isalnum() for character in query):
+            raise ValueError("Search query must contain letters or numbers")
+        return query
 
     @field_validator("names")
     @classmethod
@@ -187,8 +201,10 @@ async def list_tools(
             Tool(
                 name="tyvrana_list_operations",
                 description=(
-                    "Discover selected operation contracts from a connected adapter. "
-                    "Filter exact names or prefix; results are sorted and paginated. "
+                    "Search operation names/descriptions with query keywords "
+                    "(any term matches; more matching terms rank first, then name). "
+                    "Intersect with exact names or prefix; results are paginated. "
+                    "Start with summaries: limit defaults to 20, maximum 50. "
                     "Descriptions include effect, execution/context and artifact "
                     "behavior. "
                     "Set include_schemas for self-contained argument/result "
@@ -415,14 +431,22 @@ def _operations(
         missing = sorted(set(request.names) - available.keys())
         if missing:
             raise UnsupportedOperation(request.adapter_id, missing[0])
+    terms = set(re.findall(r"[^\W_]+", (request.query or "").casefold()))
+    scores = {
+        item.name: sum(
+            term in f"{item.name} {item.description}".casefold() for term in terms
+        )
+        for item in available.values()
+    }
     selected = sorted(
         (
             item
             for item in available.values()
             if (request.names is None or item.name in request.names)
             and item.name.startswith(request.prefix)
+            and (not terms or scores[item.name] > 0)
         ),
-        key=lambda item: item.name,
+        key=lambda item: (-scores[item.name], item.name),
     )
     limit = min(request.limit, 4) if request.include_schemas else request.limit
     end = request.offset + limit

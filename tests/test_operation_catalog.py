@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from .helpers import adapter
 from .mcp_helpers import failure
 from .test_mcp import session
@@ -107,3 +109,66 @@ async def test_cancelled_registry_wait_has_no_owned_tasks() -> None:
         detail = details[0]
         assert isinstance(detail, dict)
         assert detail["field"] == "limit" and detail["reason"] == "less_than_equal"
+
+
+async def test_text_search_ranking_filters_and_paged_schemas() -> None:
+    async with session() as (core, client):
+        names = (
+            "asset.surface_inspect",
+            "asset.surface_create",
+            "asset.deform",
+            "document.inspect",
+            "asset.surface_measure",
+        )
+        async with adapter(core, operations=names):
+            args = {
+                "adapter_id": "adapter-a",
+                "query": "SURFACE, inspect inspect",
+                "prefix": "asset.",
+                "limit": 2,
+            }
+            page = (
+                await client.call_tool("tyvrana_list_operations", args)
+            ).structured_content
+            # "Inspect" occurs in every description; ranking also uses names.
+            assert page["matched_count"] == 4 and page["next_offset"] == 2
+            assert [o["name"] for o in page["operations"]] == [
+                "asset.surface_create",
+                "asset.surface_inspect",
+            ]
+            assert all("arguments_schema" not in o for o in page["operations"])
+            next_page = (
+                await client.call_tool(
+                    "tyvrana_list_operations", {**args, "offset": page["next_offset"]}
+                )
+            ).structured_content
+            assert [o["name"] for o in next_page["operations"]] == [
+                "asset.surface_measure",
+                "asset.deform",
+            ]
+            assert next_page["next_offset"] is None
+            detailed = (
+                await client.call_tool(
+                    "tyvrana_list_operations",
+                    {**args, "names": [names[0], names[2]], "include_schemas": True},
+                )
+            ).structured_content
+            assert [o["name"] for o in detailed["operations"]] == [names[0], names[2]]
+            assert all("arguments_schema" in o for o in detailed["operations"])
+            assert detailed["catalog_sha256"] == page["catalog_sha256"]
+            absent = (
+                await client.call_tool(
+                    "tyvrana_list_operations", {**args, "query": "unadvertised"}
+                )
+            ).structured_content
+            assert absent["matched_count"] == 0 and absent["operations"] == []
+            assert absent["next_offset"] is None
+
+
+@pytest.mark.parametrize("query", ["", "  ", "---___", "x" * 257])
+async def test_invalid_search_queries_are_explicit(query: str) -> None:
+    async with session() as (_core, client):
+        result = await client.call_tool(
+            "tyvrana_list_operations", {"adapter_id": "adapter-a", "query": query}
+        )
+        assert failure(result)["code"] == "invalid_arguments"

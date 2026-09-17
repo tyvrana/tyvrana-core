@@ -77,9 +77,11 @@ No user-invoked MCP prompt templates are currently advertised.
 Before meaningful mutation, initialization guidance asks the client to infer a
 professional workflow from the requested result, existing state, hidden structure,
 behavior, references, materials, downstream constraints and acceptance needs.
-Compact examples distinguish biological, mechanical, vehicle, environment and
-static-prop considerations without imposing a fixed recipe. Real-world correctness
-requires authoritative research and actual visual reference inspection when relevant.
+Intended use determines appropriate complexity; structural and functional checks
+precede expensive dependent detail. Motion requirements need range/transition
+validation on simple geometry before final surface layers. Each dependent stage
+has an observable acceptance gate, without imposing a domain recipe. Real-world
+correctness requires authoritative research and actual visual reference inspection.
 Capability gaps are reported; reusable tool development requires authorization.
 Semantic operations, cached contracts and bounded inspections keep interaction
 cost manageable. Workflow reasoning remains with the external AI client.
@@ -121,7 +123,8 @@ ID. Registry revisions are local to the running core; restart invalidates them.
 Catalog hashes are independent of adapter identity and declaration order and
 change when a contract changes. Cache contracts by hash across reconnections.
 
-`tyvrana_list_operations` retrieves contracts from a connected adapter:
+`tyvrana_list_operations` searches compact summaries from a connected adapter.
+Use `query` keywords for the required capability, then retrieve selected contracts:
 
 ```json
 {
@@ -131,9 +134,14 @@ change when a contract changes. Cache contracts by hash across reconnections.
 }
 ```
 
-Exact `names` (1–16 unique names) and `prefix` intersect. Unknown exact names fail
-explicitly. Results contain `adapter_id`, `catalog_sha256`, `matched_count`,
-`next_offset` and sorted `operations`. Each operation has its qualified name,
+Optional `query` (1–256 characters with at least one letter or number) searches
+case-insensitive name/description text. Punctuation separates terms; any matching
+term includes an operation. More distinct matching terms rank first, with name
+as a stable tie-breaker. This is text matching, not inferred synonyms; try alternate
+terms before concluding that work is unsupported. Without a query, results sort
+by name. Search, exact `names` (1–16 unique names) and `prefix` intersect. Unknown
+exact names fail explicitly. Results contain `adapter_id`, `catalog_sha256`,
+`matched_count`, `next_offset` and `operations`. Each operation has its qualified name,
 description, effect, execution mode, interactive-context requirement and artifact
 behavior. With `include_schemas: true`, self-contained `arguments_schema` and
 `result_schema` are included. Otherwise schemas are omitted. `offset` starts at

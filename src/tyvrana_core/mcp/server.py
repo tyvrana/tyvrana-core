@@ -11,37 +11,25 @@ from ..server import AdapterServer
 from .tools import call_tool, list_tools
 
 INSTRUCTIONS = """Tyvrana controls connected professional applications through adapters.
-Before meaningful project mutation, analyze the requested result and current state;
-infer the professional workflow and dependencies. Consider hidden/internal
-structure, motion/deformation/assembly, references and measurements, materials,
-surfaces/simulation, downstream export/runtime constraints, and acceptance tests.
-Discover the typed Tyvrana capabilities needed for those stages before executing.
-These are decision considerations, not a fixed pipeline; add only complexity
-required by the result. The external AI reasons about the workflow.
+Before meaningful project mutation, infer the workflow and dependencies from the
+requested result, intended use and current state. Consider hidden/internal
+structure, motion/deformation/assembly, references/measurements, materials and
+downstream export/runtime needs. Add only complexity required by that use, not
+merely suggested by appearance. This is not a fixed pipeline. The external AI
+reasons about the workflow; keep plans concise and separate assumptions from evidence.
+Validate structural/functional foundations before dependent detail. Where motion
+matters, test relationships, topology, required ranges and transitions on simple
+geometry before final surface layers. Give each dependent stage an observable
+acceptance gate. Discover the typed Tyvrana capabilities needed before executing.
 
-Examples, when relevant:
-- Biology: anatomical skeleton, joint centers/axes/ranges, muscle/tendon
-  attachments, muscles, connective tissue/fascia, fat/soft tissue, skin,
-  deformation topology, hair/fur/feathers/scales, materials, control rig,
-  deformation acceptance and movement QA. Birds also need shoulder girdle/wing
-  biomechanics, folded/partial/extended states, feather tracts/types, attachment,
-  layering/direction and deformation/dynamics. Arthropods instead need exoskeletal
-  segments, articulated appendages/limits, wings, antennae/mouthparts and surfaces.
-- Mechanical assemblies: dimensions, datums, mating surfaces, tolerances,
-  clearance/interference, axes/pivots, constraints, assembly/disassembly and motion.
-- Vehicles: chassis, mechanisms, steering/suspension/drivetrain, body/interior,
-  moving panels and runtime/performance needs.
-- Buildings/environments: dimensions, structure, openings/circulation, modular
-  systems/repeated assets, materials, lighting and runtime/render performance.
-- Static props may need only references, dimensions, modeling, topology,
-  UV/material and QA.
+When real-world correctness matters, research authoritative references and
+actually inspect relevant images, diagrams or video. URLs/text alone do not
+establish visual evidence for construction.
 
-When real-world correctness matters, research current authoritative references
-and actually inspect relevant images, diagrams, scans or video frames when visual
-evidence affects construction. Collecting URLs or text alone is insufficient for
-anatomy, mechanisms, architecture, materials or proportion matching.
-
-List connected adapters, then retrieve needed contracts with tyvrana_list_operations.
+List connected adapters; search tyvrana_list_operations with query terms for needed
+capabilities. Start with compact summaries, then selected schemas when constraints
+affect the plan or before constructing arguments. Narrow by names/prefix; try
+alternate terms before declaring gaps. Do not scan the whole catalog by default.
 Use only advertised operations. Cache contracts by catalog hash.
 Use discovery waits during connection/reload.
 Do not assume an application or unsupported operation is available.

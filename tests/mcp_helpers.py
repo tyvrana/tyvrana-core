@@ -20,12 +20,16 @@ def assert_workflow_guidance(instructions: str) -> None:
         ("tyvrana capability gap", "authorized development", "unsupported"),
         ("do not bypass", "arbitrary scripts", "source-development permission"),
         ("batched", "filtered", "bounded", "comparison", "argument guessing"),
-        ("biology", "birds", "arthropods", "mechanical", "vehicles", "buildings"),
-        ("static props", "not a fixed pipeline", "external ai"),
+        ("intended use", "only complexity", "not a fixed pipeline", "external ai"),
+        ("validate", "foundations before", "dependent detail", "acceptance gate"),
+        ("ranges and transitions", "before final surface layers"),
+        ("query terms", "compact summaries", "selected schemas", "alternate terms"),
+        ("concise", "assumptions from evidence"),
     )
     for concept in concepts:
         assert all(term in guidance for term in concept), concept
-    assert len(instructions.encode()) < 5500
+    assert len(instructions.encode()) < 4400
+    assert "Examples, when relevant:" not in instructions
 
 
 def assert_application_control_policy(instructions: str) -> None:
