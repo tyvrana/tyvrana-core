@@ -71,9 +71,16 @@ def main(argv: Sequence[str] | None = None) -> None:
             default=defaults.port,
             help="Adapter bind port (0 selects a free port)",
         )
+        mode.add_argument(
+            "--state-directory",
+            default=defaults.state_directory,
+            help="Local durable semantic project store directory",
+        )
     args = parser.parse_args(argv)
     try:
-        config = CoreConfig(host=args.host, port=args.port)
+        config = CoreConfig(
+            host=args.host, port=args.port, state_directory=args.state_directory
+        )
     except ValidationError as exc:
         parser.error(str(exc))
     logging.basicConfig(

@@ -11,6 +11,9 @@ from ..server import AdapterServer
 from .tools import call_tool, list_tools
 
 INSTRUCTIONS = """Tyvrana controls connected professional applications through adapters.
+For continued work, retrieve project.continue with adapter_id=core first.
+Persist durable meaning with milestone-level project.apply batches; the conversation
+is not project memory. Discover project contracts lazily; verify stale bindings.
 Before meaningful project mutation, infer the workflow and dependencies from the
 requested result, intended use and current state. Consider hidden/internal
 structure, motion/deformation/assembly, references/measurements, materials and

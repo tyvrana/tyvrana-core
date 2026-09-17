@@ -37,6 +37,9 @@ from ..errors import (
     RemoteOperationError,
     UnsupportedOperation,
 )
+from ..projects.catalog import CATALOG_SHA256, CONTRACTS
+from ..projects.models import ProjectRevision
+from ..projects.store import ProjectError
 from ..server import AdapterServer
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,7 @@ class AdapterSummary(_ToolModel):
         default=None, exclude_if=lambda v: v is None
     )
     project_path: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    project_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     operation_count: int
     catalog_sha256: str
 
@@ -72,7 +76,12 @@ class ListAdaptersOutput(_ToolModel):
 
 
 class ListOperationsInput(_ToolModel):
-    adapter_id: Identifier
+    adapter_id: Identifier = Field(
+        default="core",
+        description=(
+            "Use core for semantic project operations, or a connected adapter ID."
+        ),
+    )
     names: list[QualifiedName] | None = Field(default=None, min_length=1, max_length=16)
     prefix: str = Field(default="", max_length=128)
     query: str | None = Field(
@@ -125,7 +134,12 @@ class ListOperationsOutput(_ToolModel):
 
 
 class ExecuteOperationInput(_ToolModel):
-    adapter_id: Identifier
+    adapter_id: Identifier = Field(
+        default="core",
+        description=(
+            "Use core for semantic project operations, or a connected adapter ID."
+        ),
+    )
     operation: QualifiedName
     arguments: JsonValue
     artifact_ids: tuple[ArtifactId, ...] = Field(
@@ -168,6 +182,9 @@ class ReleaseArtifactOutput(_ToolModel):
 
 class ExecuteOperationOutput(_ToolModel):
     result: JsonValue
+    project_revision: ProjectRevision | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     artifacts: tuple[ArtifactDescriptor, ...] = Field(
         default=(), exclude_if=lambda v: not v
     )
@@ -212,7 +229,8 @@ async def list_tools(
                     "(at most four contracts per page). Cache by catalog_sha256; "
                     "request "
                     "schemas before constructing arguments, preserve omitted fields, "
-                    "and do not infer native state constraints from schema alone."
+                    "and do not infer native state constraints from schema alone. "
+                    "adapter_id=core discovers durable semantic project operations."
                 ),
                 input_schema=ListOperationsInput.model_json_schema(),
                 output_schema=ListOperationsOutput.model_json_schema(
@@ -228,11 +246,15 @@ async def list_tools(
                     "the selected application operation. Optional artifact_ids attach "
                     "complete core-owned inputs, transferred before execution. "
                     "Results may include artifacts and images; operation failures "
-                    "are returned as MCP tool errors. Discover capabilities first with "
+                    "are returned as MCP tool errors. Discover capabilities "
+                    "first with "
                     "tyvrana_list_adapters, then tyvrana_list_operations for schemas. "
                     "Application mutations must use these typed "
                     "operations. Report missing capabilities; do not bypass a "
-                    "connected adapter."
+                    "connected adapter. adapter_id=core executes semantic project "
+                    "operations; start project.continue for fresh-session recovery. "
+                    "Application results include current project_revision when bound; "
+                    "use it for subsequent semantic updates."
                 ),
                 input_schema=ExecuteOperationInput.model_json_schema(),
                 output_schema=ExecuteOperationOutput.model_json_schema(
@@ -345,7 +367,7 @@ async def _execute(
 
 
 def _operation_success(
-    core: AdapterServer, response: OperationSuccess
+    core: AdapterServer, response: OperationSuccess, adapter_id: str | None = None
 ) -> CallToolResult:
     try:
         images = [
@@ -361,8 +383,26 @@ def _operation_success(
                 "image_too_large",
                 "Images exceed the MCP inline byte limit; use a smaller output",
             )
+        revision = None
+        if adapter_id is not None:
+            try:
+                registration = core.registry.get(adapter_id).registration
+            except (AdapterNotFound, AdapterDisconnected):
+                registration = None
+            if registration and registration.project_id:
+                project = core.projects.store.document_project(
+                    registration.application, registration.project_id
+                )
+                if project:
+                    revision = ProjectRevision(
+                        project_id=project.id, revision=project.revision
+                    )
         output = _success(
-            ExecuteOperationOutput(result=response.result, artifacts=response.artifacts)
+            ExecuteOperationOutput(
+                result=response.result,
+                artifacts=response.artifacts,
+                project_revision=revision,
+            )
         )
         for descriptor in images:
             with core.artifacts.open(descriptor.artifact_id) as stream:
@@ -412,6 +452,7 @@ async def _adapters(
                         application=info.registration.application,
                         application_version=info.registration.application_version,
                         project_path=info.registration.project_path,
+                        project_id=info.registration.project_id,
                         operation_count=len(info.registration.operations),
                         catalog_sha256=info.catalog_sha256,
                     )
@@ -425,8 +466,13 @@ async def _adapters(
 def _operations(
     core: AdapterServer, request: ListOperationsInput
 ) -> ListOperationsOutput:
-    info = core.registry.get(request.adapter_id)
-    available = {item.name: item for item in info.registration.operations}
+    if request.adapter_id == "core":
+        available = {item.name: item for item in CONTRACTS}
+        catalog_hash = CATALOG_SHA256
+    else:
+        info = core.registry.get(request.adapter_id)
+        available = {item.name: item for item in info.registration.operations}
+        catalog_hash = info.catalog_sha256
     if request.names is not None:
         missing = sorted(set(request.names) - available.keys())
         if missing:
@@ -455,7 +501,7 @@ def _operations(
     )
     return ListOperationsOutput(
         adapter_id=request.adapter_id,
-        catalog_sha256=info.catalog_sha256,
+        catalog_sha256=catalog_hash,
         matched_count=len(selected),
         next_offset=end if end < len(selected) else None,
         operations=tuple(
@@ -521,7 +567,40 @@ async def call_tool(
             return _success(await _adapters(core, request))
         if isinstance(request, ListOperationsInput):
             return _success(_operations(core, request))
-        return _operation_success(core, await _execute(core, request))
+        if request.adapter_id == "core":
+            if request.artifact_ids:
+                return _failure(
+                    "invalid_arguments",
+                    "Project state stores evidence references, not artifact payloads",
+                )
+            return _success(
+                ExecuteOperationOutput(
+                    result=(
+                        await core.projects.execute(
+                            request.operation, request.arguments
+                        )
+                    ).model_dump(mode="json")
+                )
+            )
+        return _operation_success(
+            core, await _execute(core, request), request.adapter_id
+        )
+    except ProjectError as exc:
+        return _failure(exc.code, str(exc), exc.details)
+    except ValidationError as exc:
+        return _failure(
+            "invalid_arguments",
+            "Invalid operation arguments",
+            [
+                {
+                    "field": ".".join(str(p) for p in error["loc"])[:200],
+                    "message": error["msg"][:300],
+                }
+                for error in exc.errors(
+                    include_input=False, include_context=False, include_url=False
+                )[:8]
+            ],
+        )
     except ArtifactError as exc:
         return _failure("artifact_transfer_failed", str(exc))
     except (

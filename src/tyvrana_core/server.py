@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from pathlib import Path
 from types import TracebackType
 from typing import Self
 
@@ -28,6 +29,7 @@ from .connection import AdapterConnection
 from .dispatcher import OperationDispatcher
 from .errors import AdapterDisconnected, DuplicateAdapter, InvalidAdapterBehavior
 from .events import EventBroker
+from .projects.service import ProjectService
 from .registry import AdapterRegistry
 
 logger = logging.getLogger(__name__)
@@ -39,8 +41,14 @@ class AdapterServer:
         self.registry = AdapterRegistry()
         self.events = EventBroker()
         self.artifacts = ArtifactStore(self.config)
+        self.projects = ProjectService(
+            self, Path(self.config.state_directory) / "projects.sqlite3"
+        )
         self.dispatcher = OperationDispatcher(
-            self.registry, self.config.operation_timeout, self.artifacts
+            self.registry,
+            self.config.operation_timeout,
+            self.artifacts,
+            before_mutation=self.projects.invalidate,
         )
         self._server: Server | None = None
         self._stopping = False
@@ -135,6 +143,8 @@ class AdapterServer:
                 raise InvalidAdapterBehavior("Registration timed out") from exc
             if not isinstance(registration, AdapterRegistration):
                 raise InvalidAdapterBehavior("First message must register the adapter")
+            if registration.instance_id == "core":
+                raise InvalidAdapterBehavior("Adapter ID core is reserved")
             if self._stopping:
                 await websocket.close(code=1001, reason="Server shutting down")
                 return

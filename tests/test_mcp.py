@@ -59,8 +59,10 @@ async def test_discovery_and_empty_adapter_list() -> None:
         discover, _, execute_tool = listed.tools[:3]
         assert "wait_seconds" in discover.input_schema["properties"]
         assert discover.input_schema["additionalProperties"] is False
+        assert (
+            execute_tool.input_schema["properties"]["adapter_id"]["default"] == "core"
+        )
         assert execute_tool.input_schema["required"] == [
-            "adapter_id",
             "operation",
             "arguments",
         ]

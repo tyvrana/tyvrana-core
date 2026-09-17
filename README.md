@@ -503,3 +503,14 @@ above. They cover JSON preservation, tool failures, cancellation, shutdown, and
 stdout safety. Ephemeral ports, asyncio debug mode, and warnings as errors keep
 transport and cleanup checks isolated. Teardown checks for leaked tasks and
 unhandled asynchronous failures.
+
+## Durable project continuation
+
+Core stores typed local project meaning across clients and restarts: goals,
+important entities and relationships, milestones, issues, validation, application
+bindings, revisions and named checkpoints. A fresh client calls `project.continue`
+through the normal execution tool with `adapter_id: "core"`; discover the remaining
+project contracts lazily. The AI reasons about the workflow while core retrieves a
+bounded deterministic packet. Coherent semantic updates use one atomic revision
+checked batch. See [project state](docs/project-state.md) for identity, freshness,
+persistence, limits and cleanup semantics.

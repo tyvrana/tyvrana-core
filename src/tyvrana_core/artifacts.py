@@ -106,6 +106,15 @@ class ArtifactStore:
         return len(self._entries)
 
     @property
+    def available_ids(self) -> frozenset[str]:
+        """Current retrievable descriptors; this does not extend their lifetime."""
+        return frozenset(
+            key
+            for key, entry in self._entries.items()
+            if entry.complete and not entry.released
+        )
+
+    @property
     def reserved_bytes(self) -> int:
         return sum(entry.begin.descriptor.byte_size for entry in self._entries.values())
 

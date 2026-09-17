@@ -52,6 +52,7 @@ class AdapterConnection:
         artifacts: ArtifactStore,
     ) -> None:
         self.registration = registration
+        self.connection_id = uuid4().hex
         self.catalog_sha256 = hashlib.sha256(
             json.dumps(
                 [

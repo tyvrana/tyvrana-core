@@ -1,9 +1,11 @@
 """Route operations to a registered adapter and preserve remote failures."""
 
 import math
+from collections.abc import Callable
 from uuid import uuid4
 
 from tyvrana_protocol import (
+    AdapterRegistration,
     JsonValue,
     OperationFailure,
     OperationRequest,
@@ -21,10 +23,12 @@ class OperationDispatcher:
         registry: AdapterRegistry,
         default_timeout: float,
         artifacts: ArtifactStore,
+        before_mutation: Callable[[AdapterRegistration], None] | None = None,
     ) -> None:
         self._registry = registry
         self._default_timeout = default_timeout
         self._artifacts = artifacts
+        self._before_mutation = before_mutation
 
     @property
     def pending_count(self) -> int:
@@ -59,6 +63,11 @@ class OperationDispatcher:
                 self._artifacts.metadata(identifier) for identifier in artifact_ids
             ),
         )
+        contract = next(
+            c for c in connection.registration.operations if c.name == operation
+        )
+        if contract.effect == "mutating" and self._before_mutation is not None:
+            self._before_mutation(connection.registration)
         response = await connection.request(request, limit)
         if isinstance(response, OperationFailure):
             raise RemoteOperationError(adapter_id, request.request_id, response.error)

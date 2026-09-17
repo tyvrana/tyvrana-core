@@ -14,6 +14,7 @@ class AdapterInfo:
     registration: AdapterRegistration
     connected: bool
     catalog_sha256: str = ""
+    connection_id: str = ""
 
     @property
     def instance_id(self) -> str:
@@ -48,7 +49,10 @@ class AdapterRegistry:
     def list(self) -> tuple[AdapterInfo, ...]:
         return tuple(
             AdapterInfo(
-                connection.registration, connection.connected, connection.catalog_sha256
+                connection.registration,
+                connection.connected,
+                connection.catalog_sha256,
+                connection.connection_id,
             )
             for connection in self._connections.values()
             if connection.connected
@@ -57,7 +61,10 @@ class AdapterRegistry:
     def get(self, instance_id: str) -> AdapterInfo:
         connection = self._get_connection(instance_id)
         return AdapterInfo(
-            connection.registration, connection.connected, connection.catalog_sha256
+            connection.registration,
+            connection.connected,
+            connection.catalog_sha256,
+            connection.connection_id,
         )
 
     def supporting(self, operation: str) -> tuple[AdapterInfo, ...]:
