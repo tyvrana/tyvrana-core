@@ -92,12 +92,12 @@ async def test_agent_guidance_reaches_official_client(
         for topic in (
             "advertised operation",
             "structured",
-            "visual verification",
+            "verify",
             "raycasting",
             "snapshot",
-            "unrelated user state",
+            "unrelated state",
             "partial mutation",
-            "Runtime validation",
+            "validation errors",
         ):
             assert topic in " ".join(client.instructions.split())
         descriptions = {
@@ -390,3 +390,28 @@ async def test_mcp_lifespan_can_restart_without_import_side_effects() -> None:
                 result = await client.call_tool("tyvrana_list_adapters")
                 assert len(result.structured_content["adapters"]) == 1
         assert core.registry.list() == ()
+
+
+async def test_explicit_adapter_target_never_falls_back() -> None:
+    async with session() as (core, client):
+        async with adapter(core, instance_id="adapter-a") as intended:
+            async with adapter(core, instance_id="adapter-b") as other:
+                task = execute(client, adapter_id="adapter-b")
+                request = await other.receive()
+                assert isinstance(request, OperationRequest)
+                await other.send(
+                    OperationSuccess(
+                        type="operation.success",
+                        request_id=request.request_id,
+                        result={"host": "b"},
+                    )
+                )
+                assert (await task).structured_content == {"result": {"host": "b"}}
+                with pytest.raises(TimeoutError):
+                    async with asyncio.timeout(0.03):
+                        await intended.receive()
+                assert (
+                    failure(await execute(client, adapter_id="disconnected"))["code"]
+                    == "adapter_not_found"
+                )
+                assert core.dispatcher.pending_count == 0

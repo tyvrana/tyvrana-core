@@ -17,8 +17,8 @@ def assert_workflow_guidance(instructions: str) -> None:
         ("references", "measurements", "materials", "downstream", "runtime"),
         ("authoritative", "actually inspect", "images", "diagrams"),
         ("discover", "typed tyvrana", "capabilities"),
-        ("tyvrana capability gap", "authorized development", "unsupported"),
-        ("do not bypass", "arbitrary scripts", "source-development permission"),
+        ("tyvrana tooling gap", "authorized development", "unsupported"),
+        ("do not bypass", "arbitrary", "scripts", "source-development permission"),
         ("batched", "filtered", "bounded", "comparison", "argument guessing"),
         ("intended use", "only complexity", "not a fixed pipeline", "external ai"),
         ("validate", "before dependent detail", "acceptance gate"),
@@ -37,7 +37,7 @@ def assert_workflow_guidance(instructions: str) -> None:
     )
     for concept in concepts:
         assert all(term in guidance for term in concept), concept
-    assert len(instructions.encode()) < 5000
+    assert len(instructions.encode()) < 5400
     assert "Examples, when relevant:" not in instructions
     for benchmark in ("mallard", "duck", "greyhound"):
         assert benchmark not in guidance
@@ -46,31 +46,33 @@ def assert_workflow_guidance(instructions: str) -> None:
 def assert_application_control_policy(instructions: str) -> None:
     policy = " ".join(instructions.lower().split())
     for required in (
-        "when a tyvrana adapter is connected for an application",
-        "all meaningful mutations",
-        "project/editor state must use tyvrana's advertised typed operations",
+        "when a tyvrana adapter is connected",
+        "all meaningful",
+        "advertised typed operations",
         "do not bypass",
-        "report the capability gap",
-        "non-authoritative observation/window management",
-        "must not mutate project/editor state",
-        "source-code/file editing with software-development tools remains allowed",
-        "does not allow direct scene/asset/prefab state edits",
+        "tyvrana tooling gap",
+        "shell/application cli",
+        "direct host apis",
+        "another application process",
+        "background/headless",
+        "intended interactive application instance",
+        "explicit adapter target",
+        "deliberately rebinding",
+        "meaningful checkpoints",
+        "typed selection/viewport framing",
+        "visible editor progress",
+        "window presence proves neither monitor visibility",
+        "ui automation",
+        "console commands",
+        "another editor-control integration",
+        "source-code/file editing remains allowed",
+        "does not authorize direct",
+        "non-authoritative observation/window management must not mutate",
         "compilation inspection",
+        "api success is not task success",
     ):
         assert required in policy
-    for bypass in (
-        "computer use",
-        "mouse",
-        "keyboard",
-        "menus",
-        "shortcuts",
-        "gizmos",
-        "console commands",
-        "arbitrary scripts",
-        "direct application apis",
-        "another editor-control/mcp integration",
-    ):
-        assert bypass in policy
+
     for specific in ("codex", "chatgpt", "blender", "unity", "unreal", "godot"):
         assert specific not in policy
 

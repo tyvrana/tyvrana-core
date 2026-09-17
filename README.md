@@ -535,3 +535,17 @@ project contracts lazily. The AI reasons about the workflow while core retrieves
 bounded deterministic packet. Coherent semantic updates use one atomic revision
 checked batch. See [project state](docs/project-state.md) for identity, freshness,
 persistence, limits and cleanup semantics.
+
+### Client control and application identity
+
+MCP initialization includes the canonical [client control guidance](src/tyvrana_core/mcp/client_control.md)
+before tool discovery, on both HTTP and stdio transports. It requires typed adapter
+control, an explicitly selected interactive host for real visual work, and visible
+milestone checkpoints. Clients that load local project instructions can reference
+this same file instead of maintaining a second copy. Instructions are guidance,
+not a security boundary; client execution policies remain the client's responsibility.
+
+Application operations target the explicit `adapter_id`; Core never falls back to
+another instance. `core` is reserved for semantic project operations. Reconnection
+or extension reload requires rediscovery and deliberate target selection; verify
+stale semantic resource bindings before continuing.
