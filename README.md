@@ -107,6 +107,13 @@ Capability gaps are reported; reusable tool development requires authorization.
 Semantic operations, cached contracts and bounded inspections keep interaction
 cost manageable. Workflow reasoning remains with the external AI client.
 
+Substantial work persists a compact semantic contract before construction. Core
+requires current accepted prerequisites to activate or accept dependent milestones,
+and requires observed evidence for acceptance. Bound application mutations use the
+active milestone's declared outputs and document/adapter target. Changes invalidate
+related validation and dependent acceptance, while read-only inspection and upstream
+repair remain possible. See [project-state contracts](docs/project-state.md).
+
 This guidance does not technically prevent external clients from using other
 capabilities they possess. Operation validation, limits and adapter safety checks
 remain enforced in code. Provenance or external-mutation detection may be added

@@ -44,7 +44,7 @@ class ProjectService:
     def environment(
         self, project_id: str
     ) -> tuple[dict[str, str], list[ApplicationStatus]]:
-        connections = {}
+        connections: dict[str, str] = {}
         statuses = []
         for document in self.store.documents(project_id):
             matches = [
@@ -52,6 +52,7 @@ class ProjectService:
                 for a in self.core.registry.list()
                 if a.registration.application == document.application
                 and a.registration.project_id == document.application_project_id
+                and a.instance_id == document.adapter_id
             ]
             if len(matches) == 1:
                 connections[document.id] = matches[0].connection_id
@@ -61,19 +62,27 @@ class ProjectService:
                     application=document.application,
                     application_project_id=document.application_project_id,
                     adapter_ids=[m.instance_id for m in matches[:8]],
-                    state="connected"
-                    if len(matches) == 1
-                    else "ambiguous"
-                    if matches
-                    else "unavailable",
+                    state="connected" if matches else "unavailable",
                     locator=None,
                 )
             )
         return connections, statuses
 
-    def invalidate(self, registration: AdapterRegistration) -> None:
-        if registration.project_id and self.store.path.exists():
-            self.store.invalidate(registration.application, registration.project_id)
+    def before_mutation(self, registration: AdapterRegistration) -> None:
+        connections: dict[str, str] = {}
+        if registration.project_id:
+            project = self.store.document_project(
+                registration.application, registration.project_id
+            )
+            if project:
+                connections, _ = self.environment(project.id)
+        self.store.prepare_mutation(
+            registration.application,
+            registration.project_id,
+            registration.instance_id,
+            connections,
+            set(self.core.artifacts.available_ids),
+        )
 
     async def execute(self, operation: str, arguments: JsonValue) -> BaseModel:
         declaration = DECLARATIONS.get(operation)
@@ -136,16 +145,23 @@ class ProjectService:
                 # Include documents being established in this same coherent batch.
                 for record in request.upsert:
                     if isinstance(record, Document):
+                        connections.pop(record.id, None)
                         matches = [
                             a
                             for a in self.core.registry.list()
                             if a.registration.application == record.application
+                            and a.instance_id == record.adapter_id
                             and a.registration.project_id
                             == record.application_project_id
                         ]
                         if len(matches) == 1:
                             connections[record.id] = matches[0].connection_id
-                return self.store.apply(project_id, request, connections)
+                return self.store.apply(
+                    project_id,
+                    request,
+                    connections,
+                    artifacts=set(self.core.artifacts.available_ids),
+                )
             artifacts = set(self.core.artifacts.available_ids)
             if isinstance(request, SearchInput):
                 return self.store.search(project_id, request, connections, artifacts)
@@ -162,7 +178,7 @@ class ProjectService:
                 )
             if any(a.state != "connected" for a in applications):
                 notices.append(
-                    "Unavailable or ambiguous documents require inspection before "
+                    "Unavailable bound documents require inspection before "
                     "relying on their bindings/validation."
                 )
             packet = packet.model_copy(
@@ -222,17 +238,15 @@ class ProjectService:
                 for a in self.core.registry.list()
                 if a.registration.application == document.application
                 and a.registration.project_id == document.application_project_id
+                and a.instance_id == document.adapter_id
                 and (request.adapter_id is None or a.instance_id == request.adapter_id)
             ]
             if len(matches) != 1:
                 raise ProjectError(
-                    "application_unavailable"
-                    if not matches
-                    else "application_ambiguous",
+                    "application_unavailable",
                     (
-                        "Connect the saved document or specify adapter_id for a r"
-                        "unning "
-                        "copy"
+                        "Connect the pinned adapter/document, or deliberately rebind "
+                        "the document before verification"
                     ),
                     document_id=document_id,
                     adapter_ids=[a.instance_id for a in matches[:8]],
@@ -323,5 +337,7 @@ class ProjectService:
                 project=ProjectPatch(),
                 upsert=list(refreshed_documents),
             ),
+            connections=self.environment(project_id)[0],
             observations=observations,
+            artifacts=set(self.core.artifacts.available_ids),
         )

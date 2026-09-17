@@ -34,6 +34,13 @@ alone are not visual evidence. Preserve unrelated state and prefer reversible
 changes. After possible partial mutation, reinspect before retrying; never assume
 rollback.
 
-For continued work, retrieve project.continue with adapter_id=core first. Persist
-durable meaning in milestone-level project.apply batches and verify stale bindings.
-Keep compact summaries/continuation; the conversation is not project memory.
+For substantial multi-stage work, persist a compact contract with project.create/apply
+before construction: goal, systems, milestone prerequisites, required validations
+and evidence criteria. Bind the intended document/adapter; set project.stage to the
+active in_progress milestone ID. Its entity_ids declare affected outputs, document_ids
+its authoring targets. Exploratory work stays provisional within that stage; accept
+only after observing required evidence, then advance. Repair stale prerequisites or
+blocking issues before dependent work; reopen the upstream stage before changing it.
+Simple unbound one-step edits need no contract. For continued work retrieve
+project.continue first, verify stale bindings, and use bounded search/delta details.
+Keep milestone-level batches; the conversation is not project memory.

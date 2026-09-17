@@ -48,7 +48,7 @@ class AdapterServer:
             self.registry,
             self.config.operation_timeout,
             self.artifacts,
-            before_mutation=self.projects.invalidate,
+            before_mutation=self.projects.before_mutation,
         )
         self._server: Server | None = None
         self._stopping = False

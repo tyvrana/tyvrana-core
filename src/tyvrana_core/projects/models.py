@@ -9,7 +9,12 @@ type Key = Annotated[
 ]
 type Label = Annotated[str, Field(min_length=1, max_length=160, pattern=r"\S")]
 type Summary = Annotated[str, Field(max_length=800)]
-type Stage = Annotated[str, Field(max_length=120)]
+type Stage = Annotated[
+    str,
+    Field(
+        max_length=128, description="Active milestone ID; empty pauses managed work."
+    ),
+]
 type Keys = Annotated[list[Key], Field(max_length=64)]
 type RecordKind = Literal[
     "entity",
@@ -47,7 +52,6 @@ class Record(Model):
     label: Label
     summary: Summary = ""
     importance: int = Field(default=0, ge=0, le=5)
-    stage: Stage = ""
     tags: list[Annotated[str, Field(min_length=1, max_length=40)]] = Field(
         default_factory=list, max_length=8
     )
@@ -69,11 +73,17 @@ class Relationship(Record):
 
 class Milestone(Record):
     kind: Literal["milestone"] = "milestone"
-    status: Literal["planned", "in_progress", "accepted", "failed", "deferred"] = (
-        "planned"
+    status: Literal[
+        "planned", "in_progress", "accepted", "failed", "deferred", "invalidated"
+    ] = "planned"
+    entity_ids: Keys = Field(
+        default_factory=list, description="Affected outputs: the active mutation scope."
     )
-    entity_ids: Keys = Field(default_factory=list)
-    validation_ids: Keys = Field(default_factory=list)
+    document_ids: Keys = Field(default_factory=list)
+    prerequisite_ids: Keys = Field(default_factory=list)
+    validation_ids: Keys = Field(
+        default_factory=list, description="Required passed, current, evidenced checks."
+    )
     acceptance: Summary = ""
 
 
@@ -98,6 +108,9 @@ class Document(Record):
     kind: Literal["document"] = "document"
     application: Key
     application_project_id: Key
+    adapter_id: Key = Field(
+        description="Explicit intended adapter instance; rebind deliberately."
+    )
     locator: Annotated[str, Field(max_length=4096)] | None = None
 
 
@@ -188,7 +201,6 @@ class Checkpoint(CheckpointInput):
 class CreateInput(Model):
     title: Label
     goal: Summary
-    stage: Stage = ""
 
 
 class ProjectInput(Model):
@@ -234,7 +246,6 @@ class SearchInput(ProjectInput):
     ids: Keys = Field(default_factory=list)
     query: Annotated[str, Field(min_length=1, max_length=160)] | None = None
     status: Annotated[str, Field(max_length=40)] | None = None
-    stage: Stage | None = None
     entity_type: Annotated[str, Field(max_length=40)] | None = None
     relation: Relation | None = None
     related_to: Key | None = None
@@ -266,7 +277,10 @@ class DeltaInput(ProjectInput):
 class VerifyInput(ProjectInput):
     expected_revision: int = Field(ge=0)
     binding_ids: list[Key] = Field(min_length=1, max_length=64)
-    adapter_id: Key | None = None
+    adapter_id: Key | None = Field(
+        default=None,
+        description="Assert pinned adapter; never override the document binding.",
+    )
 
 
 class RemoveInput(ProjectInput):
@@ -294,6 +308,18 @@ class RecordView(Model):
     evidence_availability: Literal["available", "expired", "unverified"] | None = Field(
         default=None, exclude_if=lambda v: v is None
     )
+
+
+class GateBlocker(Model):
+    milestone_id: str
+    record_id: str
+    reason: str
+
+
+class StageState(Model):
+    milestone_id: str | None
+    blockers: list[GateBlocker]
+    blocker_count: int
 
 
 class Change(Model):
@@ -341,12 +367,13 @@ class ApplicationStatus(Model):
     application: str
     application_project_id: str
     adapter_ids: list[str]
-    state: Literal["connected", "unavailable", "ambiguous"]
+    state: Literal["connected", "unavailable"]
     locator: str | None
 
 
 class Continuation(Model):
     project: Project
+    stage_state: StageState
     checkpoint: Checkpoint | None
     records: list[RecordView]
     counts: dict[str, int]

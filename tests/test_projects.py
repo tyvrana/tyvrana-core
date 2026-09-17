@@ -53,6 +53,7 @@ def fixture_batch(revision: int = 1) -> ApplyInput:
                     "label": "Source document",
                     "application": "modeler",
                     "application_project_id": "source-uuid",
+                    "adapter_id": "native",
                 },
                 {
                     "kind": "document",
@@ -60,6 +61,7 @@ def fixture_batch(revision: int = 1) -> ApplyInput:
                     "label": "Runtime document",
                     "application": "engine",
                     "application_project_id": "runtime-uuid",
+                    "adapter_id": "runtime-native",
                 },
                 {
                     "kind": "binding",
@@ -91,8 +93,8 @@ def fixture_batch(revision: int = 1) -> ApplyInput:
                 {
                     "kind": "milestone",
                     "id": "structure",
-                    "label": "Structure accepted",
-                    "status": "accepted",
+                    "label": "Structure in progress",
+                    "status": "in_progress",
                     "entity_ids": ["part"],
                     "validation_ids": ["check"],
                 },
@@ -100,11 +102,12 @@ def fixture_batch(revision: int = 1) -> ApplyInput:
                     "kind": "issue",
                     "id": "clearance",
                     "label": "Check clearance",
+                    "severity": "minor",
                     "entity_ids": ["part"],
                     "importance": 5,
                 },
             ],
-            "project": {"stage": "clearance verification"},
+            "project": {"stage": "structure"},
             "checkpoint": {"id": "structure-ready", "label": "Structure ready"},
         }
     )
@@ -128,7 +131,7 @@ def test_restart_compact_continuation_and_cross_application_relationship(
     before = store.continuation(key, None, {"source-file": "connection-a"}, set())
     after = restarted.continuation(key, None, {"source-file": "connection-a"}, set())
     assert before == after
-    assert after.project.stage == "clearance verification"
+    assert after.project.stage == "structure"
     assert after.checkpoint and after.checkpoint.revision == 2
     assert after.project.next_action == ""  # No invented plan.
     assert after.counts["relationship"] == 1
@@ -191,7 +194,10 @@ def test_concurrent_writers_conflict_delta_and_one_retry(store: ProjectStore) ->
         barrier.wait()
         try:
             other.apply(
-                key, ApplyInput(expected_revision=2, project=ProjectPatch(stage=stage))
+                key,
+                ApplyInput(
+                    expected_revision=2, project=ProjectPatch(next_action=stage)
+                ),
             )
             return "success"
         except ProjectError as exc:
@@ -350,7 +356,7 @@ def test_bounded_history_preserves_named_marker(
             key,
             ApplyInput(
                 expected_revision=revision,
-                project=ProjectPatch(stage=f"stage {revision}"),
+                project=ProjectPatch(next_action=f"step {revision}"),
             ),
         )
     marker = store.search(key, SearchInput(kind="checkpoint")).checkpoints[0]

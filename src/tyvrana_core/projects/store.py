@@ -7,10 +7,12 @@ from collections import Counter
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
+from graphlib import CycleError
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from .gates import MilestoneGates
 from .models import (
     RECORD,
     ApplyInput,
@@ -25,6 +27,7 @@ from .models import (
     DeltaInput,
     Document,
     Evidence,
+    GateBlocker,
     Issue,
     Milestone,
     Project,
@@ -33,6 +36,7 @@ from .models import (
     SearchInput,
     SearchResult,
     SemanticRecord,
+    StageState,
     Validation,
 )
 
@@ -64,6 +68,8 @@ def references(record: SemanticRecord) -> list[tuple[str, str]]:
         refs = [(key, "entity") for key in record.entity_ids]
         if isinstance(record, Milestone):
             refs += [(key, "validation") for key in record.validation_ids]
+            refs += [(key, "milestone") for key in record.prerequisite_ids]
+            refs += [(key, "document") for key in record.document_ids]
         if isinstance(record, Validation):
             refs += [(key, "evidence") for key in record.evidence_ids]
         return refs
@@ -272,7 +278,6 @@ class ProjectStore:
                 id=uuid4().hex,
                 title=request.title,
                 goal=request.goal,
-                stage=request.stage,
                 revision=1,
                 created_at=stamp,
                 updated_at=stamp,
@@ -432,6 +437,18 @@ class ProjectStore:
     ) -> None:
         if not entities:
             return
+        entities = self._dependent_entities(db, project_id, entities)
+        required_checks = {
+            check
+            for row in db.execute(
+                "SELECT data FROM records WHERE project_id=? AND kind='milestone'",
+                (project_id,),
+            )
+            if entities.intersection(
+                (milestone := Milestone.model_validate_json(row[0])).entity_ids
+            )
+            for check in milestone.validation_ids
+        }
         for row in db.execute(
             "SELECT data FROM records WHERE project_id=? AND kind='validation'",
             (project_id,),
@@ -441,7 +458,10 @@ class ProjectStore:
             if (
                 record.id not in exclude
                 and record.freshness != "stale"
-                and entities.intersection(record.entity_ids)
+                and (
+                    entities.intersection(record.entity_ids)
+                    or record.id in required_checks
+                )
             ):
                 self._put(
                     db,
@@ -450,6 +470,121 @@ class ProjectStore:
                     revision,
                     "staled",
                 )
+
+    @staticmethod
+    def _dependent_entities(
+        db: sqlite3.Connection, project_id: str, entities: set[str]
+    ) -> set[str]:
+        dependents: dict[str, set[str]] = {}
+        for row in db.execute(
+            "SELECT data FROM records WHERE project_id=? AND kind='relationship'",
+            (project_id,),
+        ):
+            record = Relationship.model_validate_json(row[0])
+            if record.relation in {
+                "depends_on",
+                "derived_from",
+                "attached_to",
+                "deformed_by",
+            }:
+                dependents.setdefault(record.target_id, set()).add(record.source_id)
+        milestones = {
+            r.id: r
+            for r in (
+                Milestone.model_validate_json(row[0])
+                for row in db.execute(
+                    "SELECT data FROM records WHERE project_id=? AND kind='milestone'",
+                    (project_id,),
+                )
+            )
+        }
+        for milestone in milestones.values():
+            for parent_id in milestone.prerequisite_ids:
+                for entity_id in milestones[parent_id].entity_ids:
+                    dependents.setdefault(entity_id, set()).update(milestone.entity_ids)
+        affected = set(entities)
+        pending = list(entities)
+        while pending:
+            for key in dependents.get(pending.pop(), set()) - affected:
+                affected.add(key)
+                pending.append(key)
+        return affected
+
+    def _gates(
+        self,
+        db: sqlite3.Connection,
+        project_id: str,
+        connections: dict[str, str],
+        artifacts: set[str],
+    ) -> MilestoneGates:
+        views = [
+            self._view(
+                db, project_id, row, connections, artifacts, evaluate_milestone=False
+            )
+            for row in db.execute(
+                "SELECT * FROM records WHERE project_id=? AND kind IN "
+                "('milestone','validation','issue','evidence','binding') ORDER BY id",
+                (project_id,),
+            )
+        ]
+        try:
+            return MilestoneGates(views)
+        except CycleError as exc:
+            raise ProjectError(
+                "prerequisite_cycle",
+                "Milestone prerequisites must be acyclic",
+                ids=list(exc.args[1])[:16],
+            ) from exc
+
+    @staticmethod
+    def _reject_gate(blockers: list[GateBlocker]) -> None:
+        if blockers:
+            raise ProjectError(
+                "milestone_blocked",
+                "Satisfy declared prerequisites and evidence before advancing",
+                blockers=[b.model_dump() for b in blockers[:16]],
+                blocker_count=len(blockers),
+            )
+
+    def _invalidate_milestones(
+        self,
+        db: sqlite3.Connection,
+        project_id: str,
+        gates: MilestoneGates,
+        revision: int,
+        changed_entities: set[str],
+        exclude: set[str],
+    ) -> None:
+        affected = self._dependent_entities(db, project_id, changed_entities)
+        invalidated: set[str] = set()
+        for key in gates.order:
+            milestone = gates.milestones[key]
+            changed = bool(affected.intersection(milestone.entity_ids))
+            changed = changed or bool(
+                invalidated.intersection(milestone.prerequisite_ids)
+            )
+            if (
+                milestone.status == "accepted"
+                and key not in exclude
+                and (changed or gates.acceptance[key])
+            ):
+                self._put(
+                    db,
+                    project_id,
+                    milestone.model_copy(update={"status": "invalidated"}),
+                    revision,
+                    "staled",
+                )
+                invalidated.add(key)
+                if any(
+                    parent in invalidated
+                    or gates.milestones[parent].status != "accepted"
+                    or gates.acceptance[parent]
+                    for parent in milestone.prerequisite_ids
+                ):
+                    self._stale(
+                        db, project_id, set(milestone.entity_ids), revision, set()
+                    )
 
     @staticmethod
     def _contexts(
@@ -466,6 +601,28 @@ class ProjectStore:
             binding = RECORD.validate_json(row[0])
             assert isinstance(binding, Binding)
             if binding.entity_id in record.entity_ids:
+                documents.add(binding.document_id)
+        for row in db.execute(
+            "SELECT data FROM records WHERE project_id=? AND kind='milestone'",
+            (project_id,),
+        ):
+            milestone = Milestone.model_validate_json(row[0])
+            if record.id in milestone.validation_ids:
+                documents.update(milestone.document_ids)
+        for evidence_id in record.evidence_ids:
+            evidence = Evidence.model_validate_json(
+                db.execute(
+                    "SELECT data FROM records WHERE project_id=? AND id=?",
+                    (project_id, evidence_id),
+                ).fetchone()[0]
+            )
+            if evidence.binding_id:
+                binding = Binding.model_validate_json(
+                    db.execute(
+                        "SELECT data FROM records WHERE project_id=? AND id=?",
+                        (project_id, evidence.binding_id),
+                    ).fetchone()[0]
+                )
                 documents.add(binding.document_id)
         return {key: connections.get(key, "") for key in sorted(documents)}
 
@@ -497,6 +654,7 @@ class ProjectStore:
                 "Named checkpoint limit reached",
                 maximum=MAX_CHECKPOINTS,
             )
+        gates = self._gates(db, project.id, connections, set())
         accepted = [
             r[0]
             for r in db.execute(
@@ -506,6 +664,7 @@ class ProjectStore:
                 ),
                 (project.id,),
             )
+            if not gates.acceptance[r[0]]
         ]
         documents = [
             r[0]
@@ -582,17 +741,44 @@ class ProjectStore:
         request: ApplyInput,
         connections: dict[str, str] | None = None,
         observations: dict[str, BindingObservation] | None = None,
+        artifacts: set[str] | None = None,
     ) -> ApplyResult:
         with self.transaction(write=True) as db:
             project = self.project(db, project_id)
             self.expect(project, request.expected_revision)
             revision = project.revision + 1
+            # Preserve a loss of acceptance before a new validation assertion can
+            # hide it (for example after reconnect). Reacceptance is explicit.
+            previous_gates = self._gates(
+                db, project_id, connections or {}, artifacts or set()
+            )
+            self._invalidate_milestones(
+                db, project_id, previous_gates, revision, set(), set()
+            )
             changed_entities: set[str] = set()
+            changed_evidence: set[str] = set()
+            changed_checks: set[str] = set()
             for record in request.upsert:
                 old = db.execute(
                     "SELECT data FROM records WHERE project_id=? AND id=?",
                     (project_id, record.id),
                 ).fetchone()
+                if isinstance(record, Milestone) and old:
+                    previous_milestone = Milestone.model_validate_json(old[0])
+                    if any(
+                        getattr(record, field) != getattr(previous_milestone, field)
+                        for field in (
+                            "acceptance",
+                            "entity_ids",
+                            "document_ids",
+                            "prerequisite_ids",
+                            "validation_ids",
+                        )
+                    ):
+                        changed_entities.update(previous_milestone.entity_ids)
+                        changed_entities.update(record.entity_ids)
+                        changed_checks.update(previous_milestone.validation_ids)
+                        changed_checks.update(record.validation_ids)
                 if (
                     record.kind == "entity"
                     and old
@@ -602,7 +788,17 @@ class ProjectStore:
                 if isinstance(record, Relationship) and (
                     not old or old[0] != record.model_dump_json()
                 ):
-                    changed_entities.update((record.source_id, record.target_id))
+                    changed_entities.add(record.source_id)
+                    if old:
+                        changed_entities.add(
+                            Relationship.model_validate_json(old[0]).source_id
+                        )
+                if (
+                    isinstance(record, Evidence)
+                    and old
+                    and old[0] != record.model_dump_json()
+                ):
+                    changed_evidence.add(record.id)
                 if isinstance(record, Binding) and not old:
                     changed_entities.add(record.entity_id)
                 if (
@@ -632,13 +828,30 @@ class ProjectStore:
                                 "resources"
                             ),
                         )
+                    if previous.adapter_id != record.adapter_id:
+                        for row in db.execute(
+                            "SELECT data FROM records WHERE project_id=? "
+                            "AND kind='binding' "
+                            "AND json_extract(data,'$.document_id')=?",
+                            (project_id, record.id),
+                        ):
+                            changed_entities.add(
+                                Binding.model_validate_json(row[0]).entity_id
+                            )
+                        db.execute(
+                            "DELETE FROM observations WHERE project_id=? AND id IN "
+                            "(SELECT id FROM records WHERE project_id=? "
+                            "AND kind='binding' "
+                            "AND json_extract(data,'$.document_id')=?)",
+                            (project_id, project_id, record.id),
+                        )
                 self._put(db, project_id, record, revision)
             for key in request.remove:
                 record = self._record(db, project_id, key)
                 if isinstance(record, Binding):
                     changed_entities.add(record.entity_id)
                 elif isinstance(record, Relationship):
-                    changed_entities.update((record.source_id, record.target_id))
+                    changed_entities.add(record.source_id)
                 db.execute(
                     "DELETE FROM records WHERE project_id=? AND id=?", (project_id, key)
                 )
@@ -662,6 +875,23 @@ class ProjectStore:
                 revision,
                 {r.id for r in request.upsert if isinstance(r, Validation)},
             )
+            revalidated = {r.id for r in request.upsert if isinstance(r, Validation)}
+            for row in db.execute(
+                "SELECT data FROM records WHERE project_id=? AND kind='validation'",
+                (project_id,),
+            ).fetchall():
+                validation = Validation.model_validate_json(row[0])
+                if validation.id not in revalidated and (
+                    validation.id in changed_checks
+                    or changed_evidence.intersection(validation.evidence_ids)
+                ):
+                    self._put(
+                        db,
+                        project_id,
+                        validation.model_copy(update={"freshness": "stale"}),
+                        revision,
+                        "staled",
+                    )
             for record in request.upsert:
                 if isinstance(record, Validation):
                     context = self._contexts(db, project_id, record, connections or {})
@@ -722,6 +952,42 @@ class ProjectStore:
             project = project.model_copy(
                 update={**updates, "revision": revision, "updated_at": now()}
             )
+            gates = self._gates(db, project_id, connections or {}, artifacts or set())
+            accepted = {
+                r.id
+                for r in request.upsert
+                if isinstance(r, Milestone) and r.status == "accepted"
+            }
+            self._invalidate_milestones(
+                db, project_id, gates, revision, changed_entities, accepted
+            )
+            # Re-read after propagation: a just-invalidated prerequisite must not
+            # satisfy an acceptance or stage transition in this same atomic batch.
+            gates = self._gates(db, project_id, connections or {}, artifacts or set())
+            for record in request.upsert:
+                if isinstance(record, Milestone):
+                    if record.status == "accepted":
+                        self._reject_gate(gates.acceptance[record.id])
+                    elif record.status == "in_progress":
+                        self._reject_gate(gates.activation[record.id])
+            if project.stage:
+                active = gates.milestones.get(project.stage)
+                if active is None:
+                    raise ProjectError(
+                        "invalid_stage",
+                        "stage must name a milestone",
+                        stage=project.stage,
+                    )
+                # Existing stages may become blocked after an upstream change;
+                # preserve that visible state so the prerequisite can be repaired.
+                if "stage" in updates:
+                    if active.status != "in_progress":
+                        raise ProjectError(
+                            "invalid_stage",
+                            "Activate an in_progress milestone",
+                            stage=project.stage,
+                        )
+                    self._reject_gate(gates.activation[project.stage])
             if updates:
                 self._change(
                     db,
@@ -787,83 +1053,176 @@ class ProjectStore:
                 checkpoint=checkpoint,
             )
 
-    def invalidate(self, application: str, application_project_id: str) -> None:
-        "Coalesce observed application writes; no semantic interpretation or plan."
+    def invalidate(
+        self,
+        application: str,
+        application_project_id: str,
+        entity_ids: set[str] | None = None,
+        connections: dict[str, str] | None = None,
+    ) -> None:
         with self.transaction(write=True) as db:
-            documents = db.execute(
-                (
-                    "SELECT project_id,id FROM records WHERE kind='document' AND "
-                    "json_extract(data,'$.application')=? AND "
-                    "json_extract(data,'$.application_project_id')=?"
-                ),
-                (application, application_project_id),
+            self._invalidate(
+                db, application, application_project_id, entity_ids, connections or {}
+            )
+
+    def prepare_mutation(
+        self,
+        application: str,
+        application_project_id: str | None,
+        adapter_id: str,
+        connections: dict[str, str],
+        artifacts: set[str],
+    ) -> None:
+        "Check the bound contract and invalidate its write scope before dispatch."
+        if not self.path.exists():
+            return  # Simple unbound operations require no project setup.
+        with self.transaction(write=True) as db:
+            candidates = db.execute(
+                "SELECT project_id,data FROM records WHERE kind='document' AND "
+                "json_extract(data,'$.application')=? AND "
+                "(json_extract(data,'$.adapter_id')=? OR "
+                "json_extract(data,'$.application_project_id')=?)",
+                (application, adapter_id, application_project_id),
             ).fetchall()
-            for document in documents:
-                project_id = document["project_id"]
-                project = self.project(db, project_id)
-                revision = project.revision + 1
-                entities = set()
-                changed = False
-                for row in db.execute(
-                    (
-                        "SELECT r.data,o.data AS observation FROM records r LEFT JOIN "
-                        "observations o ON r.project_id=o.project_id AND r.id=o.i"
-                        "d WHERE "
-                        "r.project_id=? AND r.kind='binding' AND "
-                        "json_extract(r.data,'$.document_id')=?"
-                    ),
-                    (project_id, document["id"]),
-                ).fetchall():
-                    binding = RECORD.validate_json(row["data"])
-                    assert isinstance(binding, Binding)
-                    entities.add(binding.entity_id)
-                    if row["observation"]:
-                        observation = BindingObservation.model_validate_json(
-                            row["observation"]
-                        )
-                        if observation.state == "verified":
-                            db.execute(
-                                "UPDATE observations SET data=? WHERE project_id="
-                                "? AND id=?",
-                                (
-                                    observation.model_copy(
-                                        update={"state": "stale"}
-                                    ).model_dump_json(),
-                                    project_id,
-                                    binding.id,
-                                ),
-                            )
-                            self._change(
-                                db,
-                                project_id,
-                                Change(
-                                    revision=revision,
-                                    kind="binding",
-                                    id=binding.id,
-                                    action="staled",
-                                    label=binding.label,
-                                    status="stale",
-                                ),
-                            )
-                            changed = True
-                self._stale(db, project_id, entities, revision, set())
-                changed = changed or bool(
-                    db.execute(
-                        "SELECT 1 FROM journal WHERE project_id=? AND revision=?",
-                        (project_id, revision),
-                    ).fetchone()
+            if not candidates:
+                return
+            matches = [
+                row
+                for row in candidates
+                if (
+                    (document := Document.model_validate_json(row["data"])).adapter_id
+                    == adapter_id
+                    and document.application_project_id == application_project_id
                 )
-                if changed:
-                    project = self._compact(
-                        db,
-                        project.model_copy(
-                            update={"revision": revision, "updated_at": now()}
-                        ),
+            ]
+            if len(matches) != 1:
+                raise ProjectError(
+                    "project_binding_mismatch",
+                    "Inspect the intended adapter/document and explicitly rebind "
+                    "before mutation",
+                    adapter_id=adapter_id,
+                    application_project_id=application_project_id,
+                )
+            row = matches[0]
+            document = Document.model_validate_json(row["data"])
+            project = self.project(db, row["project_id"])
+            gates = self._gates(db, project.id, connections, artifacts)
+            active = gates.milestones.get(project.stage)
+            if active is None or active.status != "in_progress":
+                raise ProjectError(
+                    "active_stage_required",
+                    "Activate an in_progress milestone with project.apply",
+                    project_id=project.id,
+                    stage=project.stage,
+                )
+            self._reject_gate(gates.activation[active.id])
+            if document.id not in active.document_ids or not active.entity_ids:
+                raise ProjectError(
+                    "stage_scope_required",
+                    "Declare the active milestone's affected entity_ids "
+                    "and document_ids",
+                    project_id=project.id,
+                    stage=active.id,
+                    document_id=document.id,
+                )
+            self._invalidate(
+                db,
+                application,
+                document.application_project_id,
+                set(active.entity_ids),
+                connections,
+            )
+
+    def _invalidate(
+        self,
+        db: sqlite3.Connection,
+        application: str,
+        application_project_id: str,
+        entity_ids: set[str] | None,
+        connections: dict[str, str],
+    ) -> None:
+        "Invalidate the declared write scope and its dependents in this transaction."
+        documents = db.execute(
+            (
+                "SELECT project_id,id FROM records WHERE kind='document' AND "
+                "json_extract(data,'$.application')=? AND "
+                "json_extract(data,'$.application_project_id')=?"
+            ),
+            (application, application_project_id),
+        ).fetchall()
+        for document in documents:
+            project_id = document["project_id"]
+            project = self.project(db, project_id)
+            revision = project.revision + 1
+            entities = set()
+            changed = False
+            for row in db.execute(
+                (
+                    "SELECT r.data,o.data AS observation FROM records r LEFT JOIN "
+                    "observations o ON r.project_id=o.project_id AND r.id=o.i"
+                    "d WHERE "
+                    "r.project_id=? AND r.kind='binding' AND "
+                    "json_extract(r.data,'$.document_id')=?"
+                ),
+                (project_id, document["id"]),
+            ).fetchall():
+                binding = RECORD.validate_json(row["data"])
+                assert isinstance(binding, Binding)
+                if entity_ids is not None and binding.entity_id not in entity_ids:
+                    continue
+                entities.add(binding.entity_id)
+                if row["observation"]:
+                    observation = BindingObservation.model_validate_json(
+                        row["observation"]
                     )
-                    db.execute(
-                        "UPDATE projects SET data=? WHERE id=?",
-                        (project.model_dump_json(), project_id),
-                    )
+                    if observation.state == "verified":
+                        db.execute(
+                            "UPDATE observations SET data=? WHERE project_id="
+                            "? AND id=?",
+                            (
+                                observation.model_copy(
+                                    update={"state": "stale"}
+                                ).model_dump_json(),
+                                project_id,
+                                binding.id,
+                            ),
+                        )
+                        self._change(
+                            db,
+                            project_id,
+                            Change(
+                                revision=revision,
+                                kind="binding",
+                                id=binding.id,
+                                action="staled",
+                                label=binding.label,
+                                status="stale",
+                            ),
+                        )
+                        changed = True
+            entities.update(entity_ids or set())
+            self._stale(db, project_id, entities, revision, set())
+            gates = self._gates(db, project_id, connections or {}, set())
+            self._invalidate_milestones(
+                db, project_id, gates, revision, entities, set()
+            )
+            changed = changed or bool(
+                db.execute(
+                    "SELECT 1 FROM journal WHERE project_id=? AND revision=?",
+                    (project_id, revision),
+                ).fetchone()
+            )
+            if changed:
+                project = self._compact(
+                    db,
+                    project.model_copy(
+                        update={"revision": revision, "updated_at": now()}
+                    ),
+                )
+                db.execute(
+                    "UPDATE projects SET data=? WHERE id=?",
+                    (project.model_dump_json(), project_id),
+                )
 
     def _view(
         self,
@@ -872,11 +1231,21 @@ class ProjectStore:
         row: sqlite3.Row,
         connections: dict[str, str],
         available_artifacts: set[str],
+        *,
+        evaluate_milestone: bool = True,
     ) -> RecordView:
         record = RECORD.validate_json(row["data"])
         binding = None
         freshness = None
         availability: Literal["available", "expired", "unverified"] | None = None
+        if (
+            isinstance(record, Milestone)
+            and record.status == "accepted"
+            and evaluate_milestone
+        ):
+            gates = self._gates(db, project_id, connections, available_artifacts)
+            if gates.acceptance[record.id]:
+                record = record.model_copy(update={"status": "invalidated"})
         if isinstance(record, Binding):
             observed = db.execute(
                 "SELECT data FROM observations WHERE project_id=? AND id=?",
@@ -987,10 +1356,13 @@ class ProjectStore:
             )
         clauses = ["r.project_id=?"]
         values: list[Any] = [project_id]
+        effective_status = request.status in {
+            "accepted",
+            "invalidated",
+        } and request.kind in {None, "milestone"}
         for field, value in [
             ("kind", request.kind),
-            ("status", request.status),
-            ("stage", request.stage),
+            ("status", None if effective_status else request.status),
             ("entity_type", request.entity_type),
             ("relation", request.relation),
         ]:
@@ -1028,7 +1400,38 @@ class ProjectStore:
             values.extend([request.application, request.application])
         where = " AND ".join(clauses)
         order = " ORDER BY json_extract(r.data,'$.importance') DESC,r.id"
-        if request.binding_state:
+        if effective_status:
+            clauses.append("r.kind='milestone'")
+            gates = self._gates(db, project_id, connections, artifacts)
+            matches = []
+            for row in db.execute(
+                "SELECT r.* FROM records r WHERE " + " AND ".join(clauses) + order,
+                values,
+            ):
+                view = self._view(
+                    db,
+                    project_id,
+                    row,
+                    connections,
+                    artifacts,
+                    evaluate_milestone=False,
+                )
+                milestone = view.record
+                assert isinstance(milestone, Milestone)
+                if milestone.status == "accepted" and gates.acceptance[milestone.id]:
+                    view = view.model_copy(
+                        update={
+                            "record": milestone.model_copy(
+                                update={"status": "invalidated"}
+                            )
+                        }
+                    )
+                assert isinstance(view.record, Milestone)
+                if view.record.status == request.status:
+                    matches.append(view)
+            count = len(matches)
+            records = matches[request.offset : request.offset + request.limit]
+        elif request.binding_state:
             # Only the binding subset needs connection-sensitive filtering.
             clauses.append("r.kind='binding'")
             where = " AND ".join(clauses)
@@ -1204,7 +1607,13 @@ class ProjectStore:
                 "document": 3,
                 "evidence": 1,
             }
-            relevant: set[str] = set()
+            gates = self._gates(db, project_id, connections, artifacts)
+            relevant: set[str] = {project.stage} if project.stage else set()
+            if project.stage in gates.milestones:
+                active = gates.milestones[project.stage]
+                relevant.update(active.prerequisite_ids)
+                relevant.update(active.validation_ids)
+                relevant.update(active.entity_ids)
             for kind, limit in limits.items():
                 keys = sorted(relevant)[:128]
                 placeholders = ",".join("?" for _ in keys) or "NULL"
@@ -1217,12 +1626,10 @@ class ProjectStore:
                 rows = db.execute(
                     "SELECT * FROM records WHERE project_id=? AND kind=? ORDER BY "
                     "CASE WHEN json_extract(data,'$.status') IN "
-                    "('open','failed','in_progress') THEN 0 ELSE 1 END, "
+                    "('open','failed','in_progress','invalidated') THEN 0 ELSE 1 END, "
                     "CASE WHEN json_extract(data,'$.severity')='critical' "
                     "THEN 0 ELSE 1 END, "
                     f"CASE WHEN {relevance} THEN 0 ELSE 1 END, "
-                    "CASE WHEN json_extract(data,'$.stage')=? AND ?<>'' "
-                    "THEN 0 ELSE 1 END, "
                     "json_extract(data,'$.importance') DESC,id LIMIT ?",
                     (
                         project_id,
@@ -1231,8 +1638,6 @@ class ProjectStore:
                         *keys,
                         *keys,
                         *keys,
-                        project.stage,
-                        project.stage,
                         limit,
                     ),
                 ).fetchall()
@@ -1269,6 +1674,11 @@ class ProjectStore:
                     )
             packet = Continuation(
                 project=project,
+                stage_state=StageState(
+                    milestone_id=project.stage or None,
+                    blockers=gates.acceptance.get(project.stage, [])[:16],
+                    blocker_count=len(gates.acceptance.get(project.stage, [])),
+                ),
                 checkpoint=checkpoint,
                 records=records,
                 counts=counts,

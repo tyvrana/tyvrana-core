@@ -3,7 +3,7 @@
 Tyvrana preserves project meaning across client sessions and core restarts. Core
 builds a compact continuation packet from typed local records without a model
 invocation. The external AI decides the workflow and next action; core stores,
-validates, indexes and retrieves declared meaning.
+validates, indexes, retrieves and enforces declared prerequisites.
 
 Application data remains authoritative for geometry, shaders, animation and native
 properties. Semantic state is authoritative for declared goals, relationships,
@@ -28,7 +28,8 @@ schemas. The seven core operations are:
 
 A fresh client should retrieve continuation, inspect critical open or stale state,
 request only relevant details, and check actual application data before acting.
-Persist important meaning at a meaningful boundary after the work is verified.
+For substantial work, persist the contract before construction; update it at
+meaningful verification boundaries. Simple unbound one-step edits need no contract.
 Application results include `project_revision` when their document is associated
 with a semantic project. Use that current revision for the next semantic update;
 observed application mutations may have invalidated previous evidence.
@@ -36,8 +37,8 @@ observed application mutations may have invalidated previous evidence.
 ## Identity and selection
 
 A core project UUID is independent of files, paths, application instances and
-client conversations. A `document` record attaches an application name and saved
-application-project identity. One native document identity belongs to at most one
+client conversations. A `document` record attaches an application name, saved
+application-project identity and explicitly selected `adapter_id`. One native document identity belongs to at most one
 semantic project; a semantic project may attach multiple documents/applications.
 A `binding` links an entity to a document plus adapter-defined resource kind and
 stable resource ID. Names and paths are human-readable locators, not keys.
@@ -54,22 +55,26 @@ saved IDs through the application's typed identity operation before attaching a
 document. Unsaved IDs remain temporary until the application project is saved.
 Save-as normally preserves document lineage; independent forks need a deliberate
 new application identity. Simultaneous copies with the same UUID are ambiguous;
-`project.verify(adapter_id=...)` chooses the inspected runtime without silently
-selecting a permanent winner. Verification refreshes the recorded file locator.
+the document's `adapter_id` pins the intended runtime. Changing that field is an
+explicit rebind and invalidates affected observations/validation. The optional
+`project.verify(adapter_id=...)` must match that binding; it cannot override it.
+Verification refreshes the recorded file locator.
 
 ## Typed meaning
 
 Records have a stable project-local ID, short label/summary, importance 0–5,
-optional free-form stage and up to eight short tags. There is no arbitrary metadata
-bag or prescribed stage enum.
+up to eight short tags. There is no arbitrary metadata bag or domain stage enum.
+`project.stage` is the active milestone ID, not a separate free-text progress note.
 
 - **Entity:** asset, system, component, reference, output, runtime counterpart or
   other declared item. Only important project meaning belongs here.
 - **Relationship:** canonical `contains`, `depends_on`, `derived_from`, `attached_to`,
   `deformed_by`, `references` or `maps_to` between entities. Duplicate/self edges
   are rejected; no automatic dependency planning is performed.
-- **Milestone:** planned, in progress, accepted, failed or deferred; concise
-  acceptance text and entity/validation references.
+- **Milestone:** planned, in progress, accepted, failed, deferred or invalidated;
+  acceptance criteria, `prerequisite_ids`, required `validation_ids`, affected
+  `entity_ids` and authoring `document_ids`. Prerequisites are milestone IDs.
+  They form an acyclic graph separate from entity relationships.
 - **Issue:** open, resolved or deferred; severity, affected entities and an
   explicitly authored next action if useful.
 - **Validation:** passed, failed, warning or unknown; a declared validation type,
@@ -82,7 +87,8 @@ Use existing tags and summaries to distinguish domain structure, control/proxy,
 deformation helper and production surface where relevant. Record their actual
 relationships. Accept a milestone from inspected representations and behavior
 evidence; a proxy's existence or label does not establish its dependent structure.
-Core stores these judgments; it does not infer physical correctness.
+Core enforces declared prerequisites and evidence requirements; it does not infer
+physical correctness or judge whether an authored observation is truthful.
 
 Persist established systems, meaningful dependencies, stage changes, milestone
 acceptance/failure, significant issues, validation decisions and downstream
@@ -115,23 +121,50 @@ A new connection generation or unavailable runtime makes prior observations
 unverified. Verification checks exactly the requested document/resource IDs.
 Adapter fingerprints describe their scope; they are not whole-scene hashes.
 
-Core conservatively stales bindings and related validations before advertised
-mutating application operations. Repeated mutations while already stale coalesce
-without another semantic write. Failures can leave the conservative invalidation
-in place because native work may have partially occurred. Entity/dependency/binding
-changes also stale affected validations, unless explicitly revalidated in that same
-semantic batch. A connection change or fingerprint change during verification
-stales related validation. Search and continuation report effective freshness.
+For a bound document, Core checks the active milestone immediately before dispatching
+an advertised mutating application operation. It must be `in_progress`, include the
+target document and declare affected entities. The exact adapter instance and saved
+document identity must match. Read-only, transient inspection/viewport work and
+lifecycle operations remain available. An absent or paused stage blocks managed
+writes; unrelated unbound one-step work remains available. There is no shared
+"last selected project" and no per-primitive workflow payload.
 
-`freshness: "current"` is an explicit AI/user assertion backed by the recorded
-validation work. Core does not assess its truth. An accepted milestone is historical
-progress, not proof that its supporting validation remains fresh. Inspect associated
-validation before relying on it. External native edits outside the fingerprint scope
-cannot all be detected; revalidate when evidence may no longer apply.
+Milestone activation requires every declared prerequisite to be accepted with
+current required validation and evidence. Acceptance also requires explicit criteria,
+at least one required validation, passed/current checks, observation summaries and
+referenced evidence with observed findings. Application evidence requires verified
+bindings. An object name, verified existence or operation success alone is insufficient.
+Unresolved major/critical issues affecting the milestone (or project-wide issues
+without entity references) block acceptance and downstream work. Work to repair
+issues within their own stage remains allowed. Planned/provisional geometry never
+satisfies a gate by existing. Use tags/summaries for provisional representations.
+
+`project.stage` selects an `in_progress` milestone, or is empty to pause authoring.
+On acceptance, select the next permitted milestone or clear the stage. Reopen the
+upstream milestone before changing its accepted output. Its `entity_ids` are the
+declared write scope, not a list of everything being read. Mutations stale those
+entities' bindings and validations, and invalidate accepted dependent milestones.
+Downstream edits therefore do not stale independent accepted prerequisites.
+
+Invalidation propagates from prerequisites to dependent milestone outputs and from
+entity targets to sources of `depends_on`, `derived_from`, `attached_to` and
+`deformed_by`. Entity/binding/dependency edits and changed evidence stale affected
+validation; complete explicit revalidation in the same atomic batch is allowed.
+Changed fingerprints, missing resources and connection generations also invalidate
+relevant acceptance. Unrelated branches remain current. Revalidation alone does not
+reaccept invalidated milestones. Checkpoints preserve historical progress; current
+continuation and search expose effective invalidated state and validation freshness.
+
+Core trusts the declared scope and observations: it does not parse application
+arguments into a domain plan, inspect evidence quality, fetch external evidence or
+authenticate user acceptance. A misleading scope, fabricated evidence or an omitted
+project contract cannot be detected semantically. Adapter fingerprints cover only
+their advertised scope; external edits outside it require explicit revalidation.
 
 Ephemeral transport artifacts expire on release/shutdown, and outbound images are
 normally released after the MCP response is constructed. Their semantic references
-remain meaningful but report expired when bytes are unavailable. External or
+remain meaningful but report expired when bytes are unavailable and cannot support
+a required acceptance gate. Preserve durable evidence for such gates. External or
 application evidence reports unverified availability: core does not fetch or retain
 it automatically. A hash identifies content; it is not a retrieval mechanism.
 
@@ -166,7 +199,7 @@ external evidence and application state are never removed with it.
 | Current records per project | 50,000 |
 | Documents per project | 64 |
 | Batch upserts / removals / serialized bytes | 256 / 64 / 512 KiB |
-| Summary / label / stage | 800 / 160 / 120 characters |
+| Summary / label / milestone ID | 800 / 160 / 128 characters |
 | References per typed reference list | 64 |
 | Named checkpoints per project | 128 |
 | Search / delta page | default 20, maximum 50 |
@@ -174,11 +207,12 @@ external evidence and application state are never removed with it.
 | Default continuation | 32 KiB structured packet |
 
 Continuation prioritizes open/failed/active concerns, critical issues, referenced
-entities, current-stage records and explicit importance, with stable ID tie breaks.
+entities, the active milestone/prerequisites and explicit importance, with stable ID
+tie breaks. `stage_state` reports up to 16 blockers and the full blocker count.
 It includes bounded categories of entities, dependencies, progress, validation and
 bindings, plus counts/omissions and a small recent delta. This is deterministic
 selection, not an opaque semantic search or AI summary. Keyword search matches
-label/summary terms; explicit type/status/stage/tag/application filters narrow detail.
+label/summary terms; explicit type/status/tag/application filters narrow detail.
 Record and relation expansion is always paginated. The packet is not proportional
 to total project size, and `omitted_counts` makes omission visible.
 

@@ -37,7 +37,24 @@ def assert_workflow_guidance(instructions: str) -> None:
     )
     for concept in concepts:
         assert all(term in guidance for term in concept), concept
-    assert len(instructions.encode()) < 5400
+    assert all(
+        term in guidance
+        for term in (
+            "substantial multi-stage",
+            "persist a compact contract",
+            "project.create/apply",
+            "milestone prerequisites",
+            "required validations",
+            "bind the intended document/adapter",
+            "active in_progress milestone id",
+            "exploratory work stays provisional",
+            "accept only after observing required evidence",
+            "repair stale prerequisites",
+            "simple unbound one-step edits need no contract",
+            "accept that anatomical foundation",
+        )
+    )
+    assert len(instructions.encode()) < 6100
     assert "Examples, when relevant:" not in instructions
     for benchmark in ("mallard", "duck", "greyhound"):
         assert benchmark not in guidance

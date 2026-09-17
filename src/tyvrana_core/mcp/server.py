@@ -27,7 +27,8 @@ Rigs, guides, cages and constraints do not establish physical structure. Build a
 inspectable representation at the fidelity downstream correctness needs; validate
 its relationships and required ranges and transitions before dependent detail.
 For realistic deformable biology, explicitly represent relevant anatomical skeletal
-geometry separately from the armature. Construct muscle/soft-tissue approximations
+geometry separately from the armature; accept that anatomical foundation and joint
+mechanics before dependent systems. Construct muscle/soft-tissue approximations
 that influence or validate the bare-body prototype; validate its deformation before
 finalizing production topology or dependent exterior systems. Joint articulation alone
 is not body-deformation acceptance. Static likeness does not require hidden anatomy.
