@@ -3,6 +3,7 @@
 import asyncio
 import os
 import signal
+import socket
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -123,3 +124,27 @@ def test_http_port_validation(capsys: pytest.CaptureFixture[str]) -> None:
         main(["mcp-http", "--mcp-port", "65536"])
     assert error.value.code == 2
     assert "65535" in capsys.readouterr().err
+
+
+async def test_adapter_startup_failure_returns_nonzero(tmp_path: Path) -> None:
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "from tyvrana_core.cli import main; main()",
+            "mcp-http",
+            "--port",
+            str(occupied.getsockname()[1]),
+            "--mcp-port",
+            "0",
+            "--state-directory",
+            str(tmp_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        async with asyncio.timeout(8):
+            _, stderr = await process.communicate()
+        assert process.returncode != 0
+        assert b"Uvicorn running on" not in stderr
