@@ -21,8 +21,13 @@ def assert_workflow_guidance(instructions: str) -> None:
         ("do not bypass", "arbitrary scripts", "source-development permission"),
         ("batched", "filtered", "bounded", "comparison", "argument guessing"),
         ("intended use", "only complexity", "not a fixed pipeline", "external ai"),
-        ("validate", "foundations before", "dependent detail", "acceptance gate"),
+        ("validate", "before dependent detail", "acceptance gate"),
         ("ranges and transitions", "simple geometry"),
+        ("domain structure", "control/deformation/procedural proxies"),
+        ("rigs, guides, cages", "do not establish physical structure"),
+        ("skeletal geometry", "separately from the armature"),
+        ("influence or validate", "representation roles", "dependencies"),
+        ("observed structures", "behavior evidence", "not proxy existence"),
         ("deformable biology", "construct", "muscle/soft-tissue", "bare-body"),
         ("validate its deformation", "before finalizing", "production topology"),
         ("dependent exterior systems", "not body-deformation acceptance"),
@@ -32,8 +37,10 @@ def assert_workflow_guidance(instructions: str) -> None:
     )
     for concept in concepts:
         assert all(term in guidance for term in concept), concept
-    assert len(instructions.encode()) < 4700
+    assert len(instructions.encode()) < 5000
     assert "Examples, when relevant:" not in instructions
+    for benchmark in ("mallard", "duck", "greyhound"):
+        assert benchmark not in guidance
 
 
 def assert_application_control_policy(instructions: str) -> None:

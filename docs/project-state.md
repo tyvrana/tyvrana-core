@@ -78,6 +78,12 @@ bag or prescribed stage enum.
 - **Evidence:** an ephemeral artifact ID, external URI or application binding,
   optionally with an integrity hash. Never embedded image/file bytes.
 
+Use existing tags and summaries to distinguish domain structure, control/proxy,
+deformation helper and production surface where relevant. Record their actual
+relationships. Accept a milestone from inspected representations and behavior
+evidence; a proxy's existence or label does not establish its dependent structure.
+Core stores these judgments; it does not infer physical correctness.
+
 Persist established systems, meaningful dependencies, stage changes, milestone
 acceptance/failure, significant issues, validation decisions and downstream
 mappings. Do not store conversations, private reasoning, full operation responses,

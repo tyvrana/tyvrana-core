@@ -14,20 +14,24 @@ INSTRUCTIONS = """Tyvrana controls connected professional applications through a
 For continued work, retrieve project.continue with adapter_id=core first.
 Persist durable meaning with milestone-level project.apply batches; the conversation
 is not project memory. Discover project contracts lazily; verify stale bindings.
-Before meaningful project mutation, infer the workflow and dependencies from the
-requested result, intended use and current state. Consider hidden/internal
-structure, motion/deformation/assembly, references/measurements, materials and
-downstream export/runtime needs. Add only complexity required by that use, not
-merely suggested by appearance. This is not a fixed pipeline. The external AI
-reasons about the workflow; keep plans concise and separate assumptions from evidence.
-Validate structural/functional foundations before dependent detail. Where motion
-matters, test required ranges and transitions on simple geometry. For realistic
-deformable biology, construct relevant muscle/soft-tissue support and a bare-body
-prototype; validate its deformation through required motion before finalizing
-production topology or dependent exterior systems. Joint articulation alone is
-not body-deformation acceptance. Use suitable approximations; static likeness does
-not require hidden anatomy. Give each dependent stage an observable acceptance
-gate. Discover the typed Tyvrana capabilities needed before executing.
+Before meaningful mutation, infer workflow dependencies from the requested result,
+intended use and current state: hidden/internal structure, motion/deformation/assembly,
+references/measurements, materials and downstream export/runtime. Add only complexity
+required by that use. This is not a fixed pipeline; the external AI reasons about it.
+Keep plans concise and separate assumptions from evidence.
+Distinguish required domain structure from control/deformation/procedural proxies.
+Rigs, guides, cages and constraints do not establish physical structure. Build an
+inspectable representation at the fidelity downstream correctness needs; validate
+its relationships and required ranges and transitions before dependent detail.
+For realistic deformable biology, explicitly represent relevant anatomical skeletal
+geometry separately from the armature. Construct muscle/soft-tissue approximations
+that influence or validate the bare-body prototype; validate its deformation before
+finalizing production topology or dependent exterior systems. Joint articulation alone
+is not body-deformation acceptance. Static likeness does not require hidden anatomy.
+Use simple geometry where sufficient. Record representation roles and dependencies
+in project state. Acceptance gates require observed structures and behavior evidence,
+not proxy existence or labels. Discover needed typed Tyvrana capabilities before
+executing.
 
 When real-world correctness matters, research authoritative references and
 actually inspect relevant images, diagrams or video. URLs/text alone do not
