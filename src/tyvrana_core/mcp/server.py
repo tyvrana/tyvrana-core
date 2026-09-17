@@ -21,9 +21,13 @@ downstream export/runtime needs. Add only complexity required by that use, not
 merely suggested by appearance. This is not a fixed pipeline. The external AI
 reasons about the workflow; keep plans concise and separate assumptions from evidence.
 Validate structural/functional foundations before dependent detail. Where motion
-matters, test relationships, topology, required ranges and transitions on simple
-geometry before final surface layers. Give each dependent stage an observable
-acceptance gate. Discover the typed Tyvrana capabilities needed before executing.
+matters, test required ranges and transitions on simple geometry. For realistic
+deformable biology, construct relevant muscle/soft-tissue support and a bare-body
+prototype; validate its deformation through required motion before finalizing
+production topology or dependent exterior systems. Joint articulation alone is
+not body-deformation acceptance. Use suitable approximations; static likeness does
+not require hidden anatomy. Give each dependent stage an observable acceptance
+gate. Discover the typed Tyvrana capabilities needed before executing.
 
 When real-world correctness matters, research authoritative references and
 actually inspect relevant images, diagrams or video. URLs/text alone do not

@@ -15,6 +15,9 @@ from mcp.client.streamable_http import streamable_http_client
 from websockets.asyncio.client import connect
 
 from tyvrana_core.cli import main
+from tyvrana_core.mcp.server import INSTRUCTIONS
+
+from .mcp_helpers import assert_workflow_guidance
 
 
 @pytest.fixture
@@ -61,6 +64,8 @@ async def test_separate_clients_keep_shared_core_and_project_state(
 ) -> None:
     process, uri, adapter_uri = http_core
     async with Client(streamable_http_client(uri)) as first:
+        assert first.instructions == INSTRUCTIONS
+        assert_workflow_guidance(first.instructions)
         result = await first.call_tool(
             "tyvrana_execute_operation",
             {
@@ -80,6 +85,8 @@ async def test_separate_clients_keep_shared_core_and_project_state(
     assert process.returncode is None
     async with connect(adapter_uri, proxy=None):
         async with Client(streamable_http_client(uri)) as fresh:
+            assert fresh.instructions == INSTRUCTIONS
+            assert_workflow_guidance(fresh.instructions)
             recovered = await fresh.call_tool(
                 "tyvrana_execute_operation",
                 {"operation": "project.continue", "arguments": {}},

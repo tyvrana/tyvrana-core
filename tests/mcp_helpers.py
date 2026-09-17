@@ -22,13 +22,17 @@ def assert_workflow_guidance(instructions: str) -> None:
         ("batched", "filtered", "bounded", "comparison", "argument guessing"),
         ("intended use", "only complexity", "not a fixed pipeline", "external ai"),
         ("validate", "foundations before", "dependent detail", "acceptance gate"),
-        ("ranges and transitions", "before final surface layers"),
+        ("ranges and transitions", "simple geometry"),
+        ("deformable biology", "construct", "muscle/soft-tissue", "bare-body"),
+        ("validate its deformation", "before finalizing", "production topology"),
+        ("dependent exterior systems", "not body-deformation acceptance"),
+        ("approximations", "static likeness", "not require hidden anatomy"),
         ("query terms", "compact summaries", "selected schemas", "alternate terms"),
         ("concise", "assumptions from evidence"),
     )
     for concept in concepts:
         assert all(term in guidance for term in concept), concept
-    assert len(instructions.encode()) < 4400
+    assert len(instructions.encode()) < 4700
     assert "Examples, when relevant:" not in instructions
 
 
