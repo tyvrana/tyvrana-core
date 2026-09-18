@@ -66,10 +66,13 @@ async def test_mcp_image_and_structured_metadata_release(media_type: str) -> Non
         )
         result = await task
         assert not result.is_error
-        assert result.structured_content == {
+        expected = {
             "result": {"width": 2},
             "artifacts": [message.descriptor.model_dump(mode="json")],
         }
+        if not media_type.startswith("image/"):
+            expected["retained_artifact_ids"] = [message.descriptor.artifact_id]
+        assert result.structured_content == expected
         images = [c for c in result.content if isinstance(c, ImageContent)]
         if media_type.startswith("image/"):
             assert len(images) == 1
@@ -84,11 +87,17 @@ async def test_mcp_image_and_structured_metadata_release(media_type: str) -> Non
             and "/tmp/" not in wire
         )
         assert "data" not in result.structured_content
+        if not media_type.startswith("image/"):
+            assert (
+                core.artifacts.metadata(message.descriptor.artifact_id)
+                == message.descriptor
+            )
+            core.artifacts.release(message.descriptor.artifact_id)
         assert core.artifacts.entry_count == 0
 
 
 @pytest.mark.parametrize("count", [1, 2])
-async def test_mcp_inline_total_bound_releases_files(count: int) -> None:
+async def test_mcp_inline_total_bound_retains_references(count: int) -> None:
     data = png()
     limit = len(data) * count - 1
     core = AdapterServer(CoreConfig(port=0, max_inline_image_bytes=limit))
@@ -110,8 +119,13 @@ async def test_mcp_inline_total_bound_releases_files(count: int) -> None:
                 artifacts=tuple(m.descriptor for m in messages),
             )
         )
-        assert failure(await task)["code"] == "image_too_large"
-        assert core.artifacts.entry_count == 0
+        result = await task
+        assert not result.is_error
+        assert not any(isinstance(c, ImageContent) for c in result.content)
+        assert result.structured_content["retained_artifact_ids"] == [
+            m.descriptor.artifact_id for m in messages
+        ]
+        assert core.artifacts.entry_count == count
 
 
 async def test_transfer_failure_is_mcp_tool_error() -> None:

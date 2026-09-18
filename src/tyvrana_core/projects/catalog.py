@@ -162,6 +162,8 @@ DECLARATIONS: dict[
 CONTRACTS = tuple(
     OperationContract(
         name=name,
+        category="project",
+        tags=("semantic", "continuity"),
         description=description,
         effect=effect,
         execution="synchronous",

@@ -89,8 +89,8 @@ class _Entry:
 class ArtifactStore:
     """Reserve before writing; publish only exact, hash-verified content.
 
-    Successful direct callers own explicit release. MCP releases its artifacts
-    after constructing output. Imported sources persist until explicit release
+    Successful direct callers own explicit release. MCP releases inline images
+    after constructing output; referenced outputs and imports persist until release
     or shutdown. Admission leases keep in-use bytes charged to the quota even
     after release, until their last reader exits. No eviction on a full store.
     """
@@ -361,6 +361,58 @@ class ArtifactStore:
             raise
         finally:
             stream.close()
+
+    async def export_file(
+        self, artifact_id: str, path: str, *, overwrite: bool = False
+    ) -> ArtifactDescriptor:
+        """Atomically export locally; paths never travel to application adapters."""
+        destination = Path(path)
+        if not destination.is_absolute() or destination.is_symlink():  # noqa: ASYNC240 - Bounded local admission, as import_file.
+            raise ArtifactError("Use an absolute destination without a final symlink")
+        if not destination.parent.is_dir() or (
+            destination.exists() and not destination.is_file()  # noqa: ASYNC240 - Bounded local admission.
+        ):
+            raise ArtifactError("Destination parent must exist; use a regular file")
+        if destination.exists() and not overwrite:  # noqa: ASYNC240 - Bounded local admission.
+            raise ArtifactError("Destination exists; explicitly enable overwrite")
+        descriptor = self.metadata(artifact_id)
+        temporary: Path | None = None
+        try:
+            with self.lease((descriptor,)) as readers:
+                stream = readers[0][1]
+                fd, filename = tempfile.mkstemp(
+                    prefix=".tyvrana-export-", dir=destination.parent
+                )
+                temporary = Path(filename)
+                digest = hashlib.sha256()
+                size = 0
+                with os.fdopen(fd, "wb") as output:
+                    while chunk := stream.read(MAX_ARTIFACT_CHUNK_SIZE):
+                        size += len(chunk)
+                        if size > descriptor.byte_size:
+                            raise ArtifactError("Stored artifact size changed")
+                        output.write(chunk)
+                        digest.update(chunk)
+                        await asyncio.sleep(0)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if (
+                    size != descriptor.byte_size
+                    or digest.hexdigest() != descriptor.sha256
+                ):
+                    raise ArtifactError("Stored artifact integrity changed")
+                if destination.is_symlink():  # noqa: ASYNC240 - Recheck before atomic publication.
+                    raise ArtifactError("Destination changed to a symlink")
+                if overwrite:
+                    os.replace(temporary, destination)
+                else:
+                    os.link(temporary, destination)
+            return descriptor
+        except OSError as exc:
+            raise ArtifactError("Cannot publish artifact at the destination") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def discard_request(self, owner: str, request_id: str) -> None:
         for artifact_id, entry in list(self._entries.items()):

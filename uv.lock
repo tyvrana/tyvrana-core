@@ -987,7 +987,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=2.2.0" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "starlette", specifier = ">=1.3.1" },
-    { name = "tyvrana-protocol", git = "https://github.com/tyvrana/tyvrana-protocol.git?rev=d110ff123ebf9291c8f110f5d7549f3dc89024b6" },
+    { name = "tyvrana-protocol", git = "https://github.com/tyvrana/tyvrana-protocol.git?rev=c498ef8456e8de5e16710ce63bb530b0ee19bcac" },
     { name = "uvicorn", specifier = ">=0.52.4" },
     { name = "websockets", specifier = ">=16.0" },
 ]
@@ -1003,7 +1003,7 @@ dev = [
 [[package]]
 name = "tyvrana-protocol"
 version = "0.0.0"
-source = { git = "https://github.com/tyvrana/tyvrana-protocol.git?rev=d110ff123ebf9291c8f110f5d7549f3dc89024b6#d110ff123ebf9291c8f110f5d7549f3dc89024b6" }
+source = { git = "https://github.com/tyvrana/tyvrana-protocol.git?rev=c498ef8456e8de5e16710ce63bb530b0ee19bcac#c498ef8456e8de5e16710ce63bb530b0ee19bcac" }
 dependencies = [
     { name = "pydantic" },
 ]

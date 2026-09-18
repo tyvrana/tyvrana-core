@@ -163,14 +163,15 @@ Use `query` keywords for the required capability, then retrieve selected contrac
 ```
 
 Optional `query` (1–256 characters with at least one letter or number) searches
-case-insensitive name/description text. Punctuation separates terms; any matching
+case-insensitive name/description/category/tag text. Punctuation separates terms; any matching
 term includes an operation. More distinct matching terms rank first, with name
 as a stable tie-breaker. This is text matching, not inferred synonyms; try alternate
 terms before concluding that work is unsupported. Without a query, results sort
-by name. Search, exact `names` (1–16 unique names) and `prefix` intersect. Unknown
+by name. Search, exact `names` (1–16 unique names), `prefix`, `category` and `tag`
+filters intersect. Unknown
 exact names fail explicitly. Results contain `adapter_id`, `catalog_sha256`,
 `matched_count`, `next_offset` and `operations`. Each operation has its qualified name,
-description, effect, execution mode, interactive-context requirement and artifact
+description, category, tags, effect, execution mode, interactive-context requirement and artifact
 behavior. With `include_schemas: true`, self-contained `arguments_schema` and
 `result_schema` are included. Otherwise schemas are omitted. `offset` starts at
 zero; `limit` defaults to 20 with a maximum of 50 summaries or four detailed
@@ -451,17 +452,22 @@ MCP results preserve `{"result": <JSON value>, "artifacts": [<descriptors>]}` in
 `structuredContent` and a text block, then append an actual SDK `ImageContent`
 block for each `image/png` or `image/jpeg` artifact in descriptor order. MCP's
 standard `data` field contains its normal base64 wire encoding; Tyvrana JSON
-payloads contain no encoded image data. Other media types currently return
-metadata only, without an invented resource link or byte retrieval capability.
-MCP releases operation output files after constructing its response, also on error
-or cancellation. Descriptors returned by operation execution describe delivered
-output; descriptors returned by import identify reusable stored inputs.
+payloads contain no encoded image data. Non-image or oversized outputs remain in
+bounded Core storage, identified by `retained_artifact_ids`. Setting execution's
+`artifact_delivery: "reference"` retains every output and embeds no image bytes.
+Inline outputs release after response construction; unsuccessful output delivery
+releases all outputs. Retained outputs and imports remain until export/release or
+runtime shutdown. A full store rejects new admission; it does not silently evict.
 
 The inline limit applies to the sum of raw PNG/JPEG bytes. Exceeding it returns
-`image_too_large` and releases the files. Base64 and JSON serialization add memory
-and wire overhead; large production images need future resource/file semantics,
-not unlimited inline responses. Use modest render dimensions for immediate visual
-feedback. Limits are configured through `CoreConfig`; the CLI uses these defaults.
+references instead of inline content. Use `tyvrana_export_artifact` with
+`artifact_id` and an absolute local `path` to retrieve retained output. Export
+verifies integrity and publishes atomically; `overwrite` defaults to false.
+Successful export releases temporary bytes unless `release: false` is explicit.
+Failures/cancellation leave the source retrievable and remove partial files.
+Paths terminate at Core's local import/export boundary and are never adapter
+transport. Use modest render dimensions for immediate visual feedback. Limits
+are configured through `CoreConfig`; the CLI uses these defaults.
 No additional services, database, or storage dependencies are required.
 
 The 128 MiB input limit accommodates typical professional 2K/4K texture files;

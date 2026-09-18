@@ -54,7 +54,9 @@ discovery and trial-and-error argument guessing. Respect the user's selected mod
 and reasoning configuration; do not change it as a cost optimization.
 After topology changes, inspect/query again: indices belong to the current snapshot.
 Use advertised raycasting before targeted sculpt work. Attach imported artifacts
-by ID; paths belong only to core's ingestion boundary. Release imports when finished.
+by ID; paths terminate at core's local import/export boundary. For large outputs use
+artifact_delivery=reference, then tyvrana_export_artifact. Export releases by default;
+release other retained_artifact_ids and imports when finished.
 """
 )
 

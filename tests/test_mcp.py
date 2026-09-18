@@ -54,6 +54,7 @@ async def test_discovery_and_empty_adapter_list() -> None:
             "tyvrana_list_operations",
             "tyvrana_execute_operation",
             "tyvrana_import_artifact",
+            "tyvrana_export_artifact",
             "tyvrana_release_artifact",
         ]
         discover, _, execute_tool = listed.tools[:3]
@@ -73,6 +74,26 @@ async def test_discovery_and_empty_adapter_list() -> None:
         result = await client.call_tool("tyvrana_list_adapters", {})
         assert not result.is_error
         assert result.structured_content == {"adapters": [], "revision": 0}
+
+
+async def test_category_and_tag_discovery_filters() -> None:
+    async with session() as (_, client):
+        result = await client.call_tool(
+            "tyvrana_list_operations",
+            {
+                "category": "project",
+                "tag": "continuity",
+                "query": "semantic",
+            },
+        )
+        assert not result.is_error
+        operations = result.structured_content["operations"]
+        assert len(operations) == 7
+        assert all(
+            o["category"] == "project" and "continuity" in o["tags"] for o in operations
+        )
+        empty = await client.call_tool("tyvrana_list_operations", {"tag": "absent"})
+        assert empty.structured_content["matched_count"] == 0
 
 
 @pytest.mark.parametrize("mode", ["auto", "legacy"])
@@ -108,6 +129,7 @@ async def test_agent_guidance_reaches_official_client(
             "tyvrana_list_operations",
             "tyvrana_execute_operation",
             "tyvrana_import_artifact",
+            "tyvrana_export_artifact",
             "tyvrana_release_artifact",
         }
         assert "currently connected" in descriptions["tyvrana_list_adapters"]

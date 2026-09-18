@@ -84,6 +84,8 @@ class ListOperationsInput(_ToolModel):
     )
     names: list[QualifiedName] | None = Field(default=None, min_length=1, max_length=16)
     prefix: str = Field(default="", max_length=128)
+    category: str | None = Field(default=None, min_length=1, max_length=64)
+    tag: str | None = Field(default=None, min_length=1, max_length=48)
     query: str | None = Field(
         default=None,
         min_length=1,
@@ -112,6 +114,8 @@ class ListOperationsInput(_ToolModel):
 class DiscoveredOperation(_ToolModel):
     name: QualifiedName
     description: str
+    category: str
+    tags: tuple[str, ...]
     effect: Literal["read_only", "mutating", "transient", "lifecycle"]
     execution: Literal["synchronous", "job_start", "job_status", "lifecycle"]
     requires_interactive: bool
@@ -142,6 +146,14 @@ class ExecuteOperationInput(_ToolModel):
     )
     operation: QualifiedName
     arguments: JsonValue
+    artifact_delivery: Literal["auto", "reference"] = Field(
+        default="auto",
+        description=(
+            "auto embeds supported images within the inline budget; other/larger "
+            "outputs remain referenced. reference retains every output without "
+            "inline bytes. Export or release retained_artifact_ids when finished."
+        ),
+    )
     artifact_ids: tuple[ArtifactId, ...] = Field(
         default=(), max_length=8, json_schema_extra={"uniqueItems": True}
     )
@@ -180,12 +192,28 @@ class ReleaseArtifactOutput(_ToolModel):
     released: bool
 
 
+class ExportArtifactInput(_ToolModel):
+    artifact_id: ArtifactId
+    path: str = Field(min_length=1, max_length=4096)
+    overwrite: bool = False
+    release: bool = True
+
+
+class ExportArtifactOutput(_ToolModel):
+    artifact: ArtifactDescriptor
+    path: str
+    released: bool
+
+
 class ExecuteOperationOutput(_ToolModel):
     result: JsonValue
     project_revision: ProjectRevision | None = Field(
         default=None, exclude_if=lambda v: v is None
     )
     artifacts: tuple[ArtifactDescriptor, ...] = Field(
+        default=(), exclude_if=lambda v: not v
+    )
+    retained_artifact_ids: tuple[ArtifactId, ...] = Field(
         default=(), exclude_if=lambda v: not v
     )
 
@@ -218,9 +246,9 @@ async def list_tools(
             Tool(
                 name="tyvrana_list_operations",
                 description=(
-                    "Search operation names/descriptions with query keywords "
+                    "Search operation names/descriptions/categories/tags with keywords "
                     "(any term matches; more matching terms rank first, then name). "
-                    "Intersect with exact names or prefix; results are paginated. "
+                    "Intersect with names/prefix/category/tag; results are paginated. "
                     "Start with summaries: limit defaults to 20, maximum 50. "
                     "Descriptions include effect, execution/context and artifact "
                     "behavior. "
@@ -274,6 +302,18 @@ async def list_tools(
                 output_schema=ArtifactDescriptor.model_json_schema(
                     mode="serialization"
                 ),
+            ),
+            Tool(
+                name="tyvrana_export_artifact",
+                description=(
+                    "Atomically export a retained artifact to an explicit local "
+                    "absolute file path. Paths terminate at core; adapters receive "
+                    "no filesystem locator. Integrity verified before publication. "
+                    "Existing files require overwrite. Releases temporary bytes "
+                    "after success by default; release=false keeps reusable inputs."
+                ),
+                input_schema=ExportArtifactInput.model_json_schema(),
+                output_schema=ExportArtifactOutput.model_json_schema(),
             ),
             Tool(
                 name="tyvrana_release_artifact",
@@ -367,22 +407,26 @@ async def _execute(
 
 
 def _operation_success(
-    core: AdapterServer, response: OperationSuccess, adapter_id: str | None = None
+    core: AdapterServer,
+    response: OperationSuccess,
+    adapter_id: str | None = None,
+    artifact_delivery: Literal["auto", "reference"] = "auto",
 ) -> CallToolResult:
+    retained: set[str] = set()
+    delivered = False
     try:
         images = [
             descriptor
             for descriptor in response.artifacts
             if descriptor.media_type in ("image/png", "image/jpeg")
         ]
-        if (
+        if artifact_delivery == "reference" or (
             sum(descriptor.byte_size for descriptor in images)
             > core.config.max_inline_image_bytes
         ):
-            return _failure(
-                "image_too_large",
-                "Images exceed the MCP inline byte limit; use a smaller output",
-            )
+            images = []
+        inline_ids = {descriptor.artifact_id for descriptor in images}
+        retained = {d.artifact_id for d in response.artifacts} - inline_ids
         revision = None
         if adapter_id is not None:
             try:
@@ -401,6 +445,11 @@ def _operation_success(
             ExecuteOperationOutput(
                 result=response.result,
                 artifacts=response.artifacts,
+                retained_artifact_ids=tuple(
+                    d.artifact_id
+                    for d in response.artifacts
+                    if d.artifact_id in retained
+                ),
                 project_revision=revision,
             )
         )
@@ -416,10 +465,12 @@ def _operation_success(
                     data=base64.b64encode(data).decode("ascii"),
                 )
             )
+        delivered = True
         return output
     finally:
         for descriptor in response.artifacts:
-            core.artifacts.release(descriptor.artifact_id)
+            if not delivered or descriptor.artifact_id not in retained:
+                core.artifacts.release(descriptor.artifact_id)
 
 
 async def _adapters(
@@ -480,7 +531,11 @@ def _operations(
     terms = set(re.findall(r"[^\W_]+", (request.query or "").casefold()))
     scores = {
         item.name: sum(
-            term in f"{item.name} {item.description}".casefold() for term in terms
+            term
+            in (
+                f"{item.name} {item.description} {item.category} {' '.join(item.tags)}"
+            ).casefold()
+            for term in terms
         )
         for item in available.values()
     }
@@ -490,6 +545,8 @@ def _operations(
             for item in available.values()
             if (request.names is None or item.name in request.names)
             and item.name.startswith(request.prefix)
+            and (request.category is None or request.category == item.category)
+            and (request.tag is None or request.tag in item.tags)
             and (not terms or scores[item.name] > 0)
         ),
         key=lambda item: (-scores[item.name], item.name),
@@ -523,6 +580,7 @@ async def call_tool(
             | ListOperationsInput
             | ImportArtifactInput
             | ReleaseArtifactInput
+            | ExportArtifactInput
         )
         if params.name == "tyvrana_list_adapters":
             request = ListAdaptersInput.model_validate(arguments)
@@ -534,6 +592,8 @@ async def call_tool(
             request = ImportArtifactInput.model_validate(arguments)
         elif params.name == "tyvrana_release_artifact":
             request = ReleaseArtifactInput.model_validate(arguments)
+        elif params.name == "tyvrana_export_artifact":
+            request = ExportArtifactInput.model_validate(arguments)
         else:
             return _failure("unknown_tool", f"Unknown tool: {params.name}")
     except ValidationError as exc:
@@ -549,6 +609,23 @@ async def call_tool(
         ]
         return _failure("invalid_arguments", "Invalid tool arguments", details)
     try:
+        if isinstance(request, ExportArtifactInput):
+            try:
+                descriptor = await core.artifacts.export_file(
+                    request.artifact_id, request.path, overwrite=request.overwrite
+                )
+            except ArtifactError as exc:
+                return _failure("artifact_export_failed", str(exc))
+            released = (
+                core.artifacts.release(request.artifact_id)
+                if request.release
+                else False
+            )
+            return _success(
+                ExportArtifactOutput(
+                    artifact=descriptor, path=request.path, released=released
+                )
+            )
         if isinstance(request, ImportArtifactInput):
             try:
                 descriptor = await core.artifacts.import_file(
@@ -583,7 +660,10 @@ async def call_tool(
                 )
             )
         return _operation_success(
-            core, await _execute(core, request), request.adapter_id
+            core,
+            await _execute(core, request),
+            request.adapter_id,
+            request.artifact_delivery,
         )
     except ProjectError as exc:
         return _failure(exc.code, str(exc), exc.details)

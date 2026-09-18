@@ -121,6 +121,7 @@ async def test_stdio_initialization_discovery_execution_and_failures(
             "tyvrana_list_operations",
             "tyvrana_execute_operation",
             "tyvrana_import_artifact",
+            "tyvrana_export_artifact",
             "tyvrana_release_artifact",
         ]
         assert (await client.call_tool("tyvrana_list_adapters")).structured_content == {

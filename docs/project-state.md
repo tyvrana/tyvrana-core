@@ -161,8 +161,9 @@ authenticate user acceptance. A misleading scope, fabricated evidence or an omit
 project contract cannot be detected semantically. Adapter fingerprints cover only
 their advertised scope; external edits outside it require explicit revalidation.
 
-Ephemeral transport artifacts expire on release/shutdown, and outbound images are
-normally released after the MCP response is constructed. Their semantic references
+Ephemeral transport artifacts expire on release/shutdown. Inline images release
+after MCP response construction; referenced outputs remain until export/release
+or shutdown. Their semantic references
 remain meaningful but report expired when bytes are unavailable and cannot support
 a required acceptance gate. Preserve durable evidence for such gates. External or
 application evidence reports unverified availability: core does not fetch or retain
