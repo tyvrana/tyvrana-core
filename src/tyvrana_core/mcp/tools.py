@@ -90,11 +90,15 @@ class ListOperationsInput(_ToolModel):
         default=None,
         min_length=1,
         max_length=256,
-        description="Search name/description terms; any match, most terms first.",
+        description="Search terms; name/category/tag matches outrank descriptions.",
     )
     offset: int = Field(default=0, ge=0, le=512)
     limit: int = Field(default=20, ge=1, le=50)
-    include_schemas: bool = False
+    schemas: Literal["none", "arguments", "full"] = Field(
+        default="none",
+        description="Use arguments for authoring; full adds result schemas. "
+        "Up to 8 selected contracts/page.",
+    )
 
     @field_validator("query")
     @classmethod
@@ -135,6 +139,7 @@ class ListOperationsOutput(_ToolModel):
     matched_count: int
     next_offset: int | None
     operations: tuple[DiscoveredOperation, ...]
+    unavailable_names: tuple[str, ...] = ()
 
 
 class ExecuteOperationInput(_ToolModel):
@@ -247,14 +252,16 @@ async def list_tools(
                 name="tyvrana_list_operations",
                 description=(
                     "Search operation names/descriptions/categories/tags with keywords "
-                    "(any term matches; more matching terms rank first, then name). "
+                    "(name/category/tag matches outrank description mentions). "
                     "Intersect with names/prefix/category/tag; results are paginated. "
                     "Start with summaries: limit defaults to 20, maximum 50. "
                     "Descriptions include effect, execution/context and artifact "
                     "behavior. "
-                    "Set include_schemas for self-contained argument/result "
-                    "JSON Schemas "
-                    "(at most four contracts per page). Cache by catalog_sha256; "
+                    "Batch exact names with schemas=arguments before authoring; "
+                    "schemas=full additionally includes result schemas "
+                    "(at most eight contracts per page). Unknown requested names "
+                    "are reported in unavailable_names while valid matches remain. "
+                    "Cache by catalog_sha256; "
                     "request "
                     "schemas before constructing arguments, preserve omitted fields, "
                     "and do not infer native state constraints from schema alone. "
@@ -524,17 +531,15 @@ def _operations(
         info = core.registry.get(request.adapter_id)
         available = {item.name: item for item in info.registration.operations}
         catalog_hash = info.catalog_sha256
-    if request.names is not None:
-        missing = sorted(set(request.names) - available.keys())
-        if missing:
-            raise UnsupportedOperation(request.adapter_id, missing[0])
+    missing = sorted(set(request.names or []) - available.keys())
     terms = set(re.findall(r"[^\W_]+", (request.query or "").casefold()))
+    terms -= {"a", "an", "the", "to", "for", "of", "in", "and", "with", "from"}
     scores = {
         item.name: sum(
-            term
-            in (
-                f"{item.name} {item.description} {item.category} {' '.join(item.tags)}"
-            ).casefold()
+            12 * (term in set(re.findall(r"[^\W_]+", item.name.casefold())))
+            + 6
+            * (term in {item.category.casefold(), *(t.casefold() for t in item.tags)})
+            + (term in item.description.casefold())
             for term in terms
         )
         for item in available.values()
@@ -551,16 +556,21 @@ def _operations(
         ),
         key=lambda item: (-scores[item.name], item.name),
     )
-    limit = min(request.limit, 4) if request.include_schemas else request.limit
+    limit = min(request.limit, 8) if request.schemas != "none" else request.limit
     end = request.offset + limit
     excluded = (
-        set() if request.include_schemas else {"arguments_schema", "result_schema"}
+        {"result_schema"}
+        if request.schemas == "arguments"
+        else {"arguments_schema", "result_schema"}
+        if request.schemas == "none"
+        else set()
     )
     return ListOperationsOutput(
         adapter_id=request.adapter_id,
         catalog_sha256=catalog_hash,
         matched_count=len(selected),
         next_offset=end if end < len(selected) else None,
+        unavailable_names=tuple(missing),
         operations=tuple(
             DiscoveredOperation.model_validate(item.model_dump(exclude=excluded))
             for item in selected[request.offset : end]

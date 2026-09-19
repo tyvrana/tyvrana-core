@@ -1,6 +1,7 @@
 """Contracts and event-driven discovery through the official MCP client."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -56,7 +57,7 @@ async def test_catalog_pages_selected_schemas_and_stable_hash() -> None:
                 {
                     "adapter_id": "adapter-a",
                     "names": [names[3]],
-                    "include_schemas": True,
+                    "schemas": "full",
                 },
             )
             contract = selected.structured_content["operations"][0]
@@ -70,10 +71,10 @@ async def test_catalog_pages_selected_schemas_and_stable_hash() -> None:
                 == "object"
             )
             detailed = await client.call_tool(
-                "tyvrana_list_operations", {**args, "include_schemas": True}
+                "tyvrana_list_operations", {**args, "schemas": "full"}
             )
-            assert len(detailed.structured_content["operations"]) == 4
-            assert detailed.structured_content["next_offset"] == 4
+            assert len(detailed.structured_content["operations"]) == 5
+            assert detailed.structured_content["next_offset"] == 5
             missing = await client.call_tool(
                 "tyvrana_list_operations",
                 {
@@ -81,7 +82,24 @@ async def test_catalog_pages_selected_schemas_and_stable_hash() -> None:
                     "names": ["absent.operation"],
                 },
             )
-            assert failure(missing)["code"] == "operation_unsupported"
+            assert not missing.is_error
+            assert missing.structured_content["unavailable_names"] == [
+                "absent.operation"
+            ]
+            assert missing.structured_content["operations"] == []
+            arguments_only = await client.call_tool(
+                "tyvrana_list_operations",
+                {
+                    "adapter_id": "adapter-a",
+                    "names": [names[3], "absent.operation"],
+                    "schemas": "arguments",
+                },
+            )
+            compact = arguments_only.structured_content
+            assert compact["unavailable_names"] == ["absent.operation"]
+            assert compact["operations"][0]["arguments_schema"]["type"] == "object"
+            assert "result_schema" not in compact["operations"][0]
+            assert len(json.dumps(compact["operations"][0])) < len(json.dumps(contract))
         async with adapter(core, operations=tuple(reversed(names))):
             assert core.registry.get("adapter-a").catalog_sha256 == digest
         async with adapter(core, operations=names[:-1]):
@@ -133,8 +151,8 @@ async def test_text_search_ranking_filters_and_paged_schemas() -> None:
             # "Inspect" occurs in every description; ranking also uses names.
             assert page["matched_count"] == 4 and page["next_offset"] == 2
             assert [o["name"] for o in page["operations"]] == [
-                "asset.surface_create",
                 "asset.surface_inspect",
+                "asset.surface_create",
             ]
             assert all("arguments_schema" not in o for o in page["operations"])
             next_page = (
@@ -150,7 +168,7 @@ async def test_text_search_ranking_filters_and_paged_schemas() -> None:
             detailed = (
                 await client.call_tool(
                     "tyvrana_list_operations",
-                    {**args, "names": [names[0], names[2]], "include_schemas": True},
+                    {**args, "names": [names[0], names[2]], "schemas": "full"},
                 )
             ).structured_content
             assert [o["name"] for o in detailed["operations"]] == [names[0], names[2]]

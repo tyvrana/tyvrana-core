@@ -158,23 +158,23 @@ Use `query` keywords for the required capability, then retrieve selected contrac
 {
   "adapter_id": "example-editor",
   "names": ["document.inspect"],
-  "include_schemas": true
+  "schemas": "arguments"
 }
 ```
 
 Optional `query` (1–256 characters with at least one letter or number) searches
 case-insensitive name/description/category/tag text. Punctuation separates terms; any matching
-term includes an operation. More distinct matching terms rank first, with name
+term includes an operation. Name/category/tag matches outrank description mentions, with name
 as a stable tie-breaker. This is text matching, not inferred synonyms; try alternate
 terms before concluding that work is unsupported. Without a query, results sort
 by name. Search, exact `names` (1–16 unique names), `prefix`, `category` and `tag`
 filters intersect. Unknown
-exact names fail explicitly. Results contain `adapter_id`, `catalog_sha256`,
+exact names are reported in `unavailable_names`; valid requested contracts are still returned. Results contain `adapter_id`, `catalog_sha256`,
 `matched_count`, `next_offset` and `operations`. Each operation has its qualified name,
 description, category, tags, effect, execution mode, interactive-context requirement and artifact
-behavior. With `include_schemas: true`, self-contained `arguments_schema` and
-`result_schema` are included. Otherwise schemas are omitted. `offset` starts at
-zero; `limit` defaults to 20 with a maximum of 50 summaries or four detailed
+behavior. Use `schemas: "arguments"` for self-contained input contracts.
+`schemas: "full"` additionally includes `result_schema`; the default `"none"` omits schemas. `offset` starts at
+zero; `limit` defaults to 20 with a maximum of 50 summaries or eight detailed
 contracts per page. Follow `next_offset` until null. Fetch only needed schemas;
 requesting the complete detailed catalog is usually unnecessary.
 

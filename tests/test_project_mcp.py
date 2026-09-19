@@ -29,7 +29,7 @@ async def test_fresh_clients_restart_and_conflict_over_mcp(tmp_path: Path) -> No
     async with Client(create_mcp_server(core), raise_exceptions=True) as client:
         schemas = await client.call_tool(
             "tyvrana_list_operations",
-            {"query": "continuation", "include_schemas": True},
+            {"query": "continuation", "schemas": "full"},
         )
         assert not schemas.is_error
         assert any(

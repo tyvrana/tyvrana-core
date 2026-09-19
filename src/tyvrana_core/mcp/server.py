@@ -37,18 +37,19 @@ in project state. Acceptance gates require observed structures and behavior evid
 not proxy existence or labels. Discover needed typed Tyvrana capabilities before
 executing.
 
-List connected adapters; search tyvrana_list_operations with query terms for needed
-capabilities. Start with compact summaries, then selected schemas when constraints
-affect the plan or before constructing arguments. Narrow by names/prefix; try
-alternate terms before declaring gaps. Do not scan the whole catalog by default.
+List adapters; search tyvrana_list_operations with query terms.
+Use compact summaries, then batch selected names with schemas=arguments for authoring;
+result schemas are opt-in. Narrow by names/prefix; try alternate terms before declaring
+gaps. Do not scan the whole catalog by default.
 Use only advertised operations. Cache contracts by catalog hash.
 Use discovery waits during connection/reload.
-Do not assume an application or unsupported operation is available.
 
 Inspect structured state before significant changes. Operation arguments are
 application-specific; follow their contracts and validation errors.
 Prefer semantic/batched operations, filtered compact inspection, delta/comparison
 tools, application-side calculation, bounded outputs and minimal meaningful renders.
+Use automatically framed multiview inspection when advertised. Retrieve each
+completed image once; inline image artifacts are released automatically.
 Avoid unchanged queries/renders, per-element edits for one intent, repeated
 discovery and trial-and-error argument guessing. Respect the user's selected model
 and reasoning configuration; do not change it as a cost optimization.

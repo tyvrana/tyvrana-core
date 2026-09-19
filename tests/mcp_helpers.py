@@ -32,7 +32,8 @@ def assert_workflow_guidance(instructions: str) -> None:
         ("validate its deformation", "before finalizing", "production topology"),
         ("dependent exterior systems", "not body-deformation acceptance"),
         ("approximations", "static likeness", "not require hidden anatomy"),
-        ("query terms", "compact summaries", "selected schemas", "alternate terms"),
+        ("query terms", "compact summaries", "schemas=arguments", "alternate terms"),
+        ("result schemas are opt-in", "multiview", "completed image once"),
         ("concise", "assumptions from evidence"),
     )
     for concept in concepts:
