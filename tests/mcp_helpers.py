@@ -34,6 +34,7 @@ def assert_workflow_guidance(instructions: str) -> None:
         ("approximations", "static likeness", "not require hidden anatomy"),
         ("query terms", "compact summaries", "schemas=arguments", "alternate terms"),
         ("result schemas are opt-in", "multiview", "completed image once"),
+        ("once a semantic match is found", "discover later-stage tools when needed"),
         ("concise", "assumptions from evidence"),
     )
     for concept in concepts:

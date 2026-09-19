@@ -38,11 +38,11 @@ not proxy existence or labels. Discover needed typed Tyvrana capabilities before
 executing.
 
 List adapters; search tyvrana_list_operations with query terms.
-Use compact summaries, then batch selected names with schemas=arguments for authoring;
-result schemas are opt-in. Narrow by names/prefix; try alternate terms before declaring
-gaps. Do not scan the whole catalog by default.
-Use only advertised operations. Cache contracts by catalog hash.
-Use discovery waits during connection/reload.
+Use compact summaries. Once a semantic match is found, batch selected names with
+schemas=arguments and use it. Discover later-stage tools when needed;
+result schemas are opt-in. Cache by catalog hash; avoid repeat searches.
+Try alternate terms before declaring gaps. Use only advertised operations;
+use discovery waits during connection/reload.
 
 Inspect structured state before significant changes. Operation arguments are
 application-specific; follow their contracts and validation errors.
