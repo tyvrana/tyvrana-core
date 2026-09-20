@@ -56,7 +56,13 @@ def assert_workflow_guidance(instructions: str) -> None:
             "accept that anatomical foundation",
         )
     )
-    assert len(instructions.encode()) < 6100
+    assert (
+        "dimensions and clean topology do not establish reference fidelity" in guidance
+    )
+    assert "review closeups, refine local shape and compare" in guidance
+    assert "perspective evidence stays qualitative" in guidance
+    assert "independent visual review packet" in guidance
+    assert len(instructions.encode()) < 6600
     assert "Examples, when relevant:" not in instructions
     for benchmark in ("mallard", "duck", "greyhound"):
         assert benchmark not in guidance

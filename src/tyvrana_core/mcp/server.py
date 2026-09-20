@@ -36,6 +36,11 @@ Use simple geometry where sufficient. Record representation roles and dependenci
 in project state. Acceptance gates require observed structures and behavior evidence,
 not proxy existence or labels. Discover needed typed Tyvrana capabilities before
 executing.
+For irregular forms, dimensions and clean topology do not establish reference fidelity.
+Build from observed contours/sections, review closeups, refine local shape and compare
+again. Use calibrated comparisons where supported; perspective evidence stays
+qualitative. Require an independent visual review packet before accepting substantial
+visual stages.
 
 List adapters; search tyvrana_list_operations with query terms.
 Use compact summaries. Once a semantic match is found, batch selected names with
