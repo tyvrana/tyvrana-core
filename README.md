@@ -176,6 +176,16 @@ behavior. Use `schemas: "arguments"` for self-contained input contracts.
 `schemas: "full"` additionally includes `result_schema`; the default `"none"` omits schemas. `offset` starts at
 zero; `limit` defaults to 20 with a maximum of 50 summaries or eight detailed
 contracts per page. Follow `next_offset` until null. Fetch only needed schemas;
+
+Conditional discovery accepts up to 64 `known_contracts` name/fingerprint pairs.
+Retain each returned `contract_sha256` with its contract, then pass it on later
+searches, including overlapping queries. Matching entries return
+`schema_status: "unchanged"` without schemas. Unknown or changed contracts return
+`schema_status: "included"` and the requested schemas. Fingerprints cover the
+entire contract and schema mode, so argument-only knowledge cannot suppress a
+later full contract. Omit the mapping to refresh deliberately. The server retains
+no client cache; unchanged contracts remain reusable across adapter reconnects.
+
 requesting the complete detailed catalog is usually unnecessary.
 
 The schema exposes structural types, enums, bounds and defaults. Preserve omitted

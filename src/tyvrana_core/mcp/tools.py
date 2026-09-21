@@ -2,10 +2,11 @@
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
 import anyio
 from mcp.server import ServerRequestContext
@@ -99,6 +100,15 @@ class ListOperationsInput(_ToolModel):
         description="Use arguments for authoring; full adds result schemas. "
         "Up to 8 selected contracts/page.",
     )
+    known_contracts: dict[
+        QualifiedName, Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    ] = Field(
+        default_factory=dict,
+        max_length=64,
+        description="Previously received name-to-contract_sha256 pairs. Matching "
+        "contracts omit schemas across overlapping queries. Omit to refresh; "
+        "fingerprints include the requested schemas mode.",
+    )
 
     @field_validator("query")
     @classmethod
@@ -117,6 +127,8 @@ class ListOperationsInput(_ToolModel):
 
 class DiscoveredOperation(_ToolModel):
     name: QualifiedName
+    contract_sha256: str
+    schema_status: Literal["not_requested", "included", "unchanged"]
     description: str
     category: str
     tags: tuple[str, ...]
@@ -261,8 +273,10 @@ async def list_tools(
                     "schemas=full additionally includes result schemas "
                     "(at most eight contracts per page). Unknown requested names "
                     "are reported in unavailable_names while valid matches remain. "
-                    "Cache by catalog_sha256; "
-                    "request "
+                    "Retain contract_sha256 with each contract; pass known_contracts "
+                    "on overlapping searches to omit unchanged schemas. "
+                    "Omit to refresh. "
+                    "Request "
                     "schemas before constructing arguments, preserve omitted fields, "
                     "and do not infer native state constraints from schema alone. "
                     "adapter_id=core discovers durable semantic project operations."
@@ -565,16 +579,39 @@ def _operations(
         if request.schemas == "none"
         else set()
     )
+    operations = []
+    for item in selected[request.offset : end]:
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"schemas": request.schemas, "contract": item.model_dump(mode="json")},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        unchanged = request.known_contracts.get(item.name) == fingerprint
+        data = item.model_dump(
+            exclude={"arguments_schema", "result_schema"} if unchanged else excluded
+        )
+        operations.append(
+            DiscoveredOperation.model_validate(
+                {
+                    **data,
+                    "contract_sha256": fingerprint,
+                    "schema_status": "not_requested"
+                    if request.schemas == "none"
+                    else "unchanged"
+                    if unchanged
+                    else "included",
+                }
+            )
+        )
     return ListOperationsOutput(
         adapter_id=request.adapter_id,
         catalog_sha256=catalog_hash,
         matched_count=len(selected),
         next_offset=end if end < len(selected) else None,
         unavailable_names=tuple(missing),
-        operations=tuple(
-            DiscoveredOperation.model_validate(item.model_dump(exclude=excluded))
-            for item in selected[request.offset : end]
-        ),
+        operations=tuple(operations),
     )
 
 

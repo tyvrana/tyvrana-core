@@ -45,7 +45,8 @@ visual stages.
 List adapters; search tyvrana_list_operations with query terms.
 Use compact summaries. Once a semantic match is found, batch selected names with
 schemas=arguments and use it. Discover later-stage tools when needed;
-result schemas are opt-in. Cache by catalog hash; avoid repeat searches.
+result schemas are opt-in. Retain contract_sha256; send known_contracts on
+overlapping searches.
 Try alternate terms before declaring gaps. Use only advertised operations;
 use discovery waits during connection/reload.
 
