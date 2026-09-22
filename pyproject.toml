@@ -15,7 +15,7 @@ dependencies = [
     "mcp>=2.2.0",
     "pydantic>=2.13.5",
     "starlette>=1.3.1",
-    "tyvrana-protocol @ git+https://github.com/tyvrana/tyvrana-protocol.git@ef8962fd26fe88a1bdc5c78922b99c265e507485",
+    "tyvrana-protocol @ git+https://github.com/tyvrana/tyvrana-protocol.git@602a00b734513200525205162cb4d0276df90c6c",
     "websockets>=16.0",
     "uvicorn>=0.52.4",
 ]

@@ -1,11 +1,17 @@
 """Strong document evidence and runtime attachment, separate from semantic history."""
 
+import asyncio
 import json
+import time
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 from pydantic import Field
-from tyvrana_protocol import DocumentAttestation
+from tyvrana_protocol import (
+    DocumentAttestation,
+    DocumentAttestationJob,
+    DocumentAttestationResponse,
+)
 
 from .models import Document, Key, Model, ProjectInput
 from .store import ProjectError
@@ -85,7 +91,59 @@ class Continuity:
         response = await self.service.core.dispatcher.execute(
             adapter_id=adapter.instance_id, operation=contracts[0].name, arguments={}
         )
-        evidence = DocumentAttestation.model_validate(response.result)
+        observed = DocumentAttestationResponse.model_validate(response.result).root
+        if isinstance(observed, DocumentAttestationJob):
+            statuses = [
+                c
+                for c in adapter.registration.operations
+                if "document_attestation_status" in c.tags
+                and c.effect == "read_only"
+                and c.execution == "job_status"
+            ]
+            if len(statuses) != 1:
+                raise ProjectError(
+                    "attestation_unsupported",
+                    "Observable attestation requires one tagged status contract",
+                )
+            deadline = time.monotonic() + 20
+            delay = observed.poll_after_seconds
+            while observed.state in {"queued", "running"}:
+                if time.monotonic() + delay >= deadline:
+                    raise ProjectError(
+                        "attestation_pending",
+                        "Attestation continues as an observable application job; "
+                        "inspect its status",
+                        job_id=observed.job_id,
+                        operation=statuses[0].name,
+                    )
+                await asyncio.sleep(delay)
+                try:
+                    async with asyncio.timeout(max(0.001, deadline - time.monotonic())):
+                        response = await self.service.core.dispatcher.execute(
+                            adapter_id=adapter.instance_id,
+                            operation=statuses[0].name,
+                            arguments={"job_id": observed.job_id},
+                        )
+                except TimeoutError:
+                    raise ProjectError(
+                        "attestation_pending",
+                        "Attestation continues as an observable application job; "
+                        "inspect its status",
+                        job_id=observed.job_id,
+                        operation=statuses[0].name,
+                    ) from None
+                observed = DocumentAttestationJob.model_validate(response.result)
+                delay = min(2.0, max(observed.poll_after_seconds, delay * 1.5))
+            if observed.state != "completed" or observed.result is None:
+                raise ProjectError(
+                    "attestation_incomplete",
+                    "Attestation job did not complete",
+                    state=observed.state,
+                    error=observed.error.model_dump() if observed.error else None,
+                )
+            evidence = observed.result
+        else:
+            evidence = observed
         current = self.service.core.registry.get(adapter.instance_id)
         if (
             current.connection_id != adapter.connection_id

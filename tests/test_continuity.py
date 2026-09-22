@@ -11,6 +11,8 @@ from tyvrana_protocol import (
     AdapterEvent,
     AdapterRegistration,
     DocumentAttestation,
+    DocumentAttestationJob,
+    DocumentAttestationResponse,
     OperationContract,
     OperationRequest,
     OperationSuccess,
@@ -44,7 +46,11 @@ def evidence(
 
 @asynccontextmanager
 async def connected(
-    core: AdapterServer, instance: str, value: dict[str, Any]
+    core: AdapterServer,
+    instance: str,
+    value: dict[str, Any],
+    *,
+    asynchronous: bool = False,
 ) -> AsyncIterator[None]:
     async with connect(core.uri, proxy=None) as socket:
         fake = FakeAdapter(socket)
@@ -57,6 +63,26 @@ async def connected(
             effect="read_only",
             execution="synchronous",
         )
+        operations: tuple[OperationContract, ...] = (operation,)
+        if asynchronous:
+            response_schema = DocumentAttestationResponse.model_json_schema()
+            operations = (
+                operation.model_copy(
+                    update={
+                        "execution": "job_start",
+                        "result_schema": response_schema,
+                    }
+                ),
+                OperationContract(
+                    name="editor.document.status",
+                    description="Observe work",
+                    tags=("document_attestation_status",),
+                    arguments_schema={"type": "object"},
+                    result_schema=DocumentAttestationJob.model_json_schema(),
+                    effect="read_only",
+                    execution="job_status",
+                ),
+            )
         with core.events.subscribe() as events:
             await fake.send(
                 AdapterRegistration(
@@ -64,7 +90,7 @@ async def connected(
                     instance_id=instance,
                     application="editor",
                     project_id="saved",
-                    operations=(operation,),
+                    operations=operations,
                 )
             )
             await fake.send(
@@ -80,7 +106,18 @@ async def connected(
                     OperationSuccess(
                         type="operation.success",
                         request_id=request.request_id,
-                        result=value,
+                        result=(
+                            dict(job_id="job", state="queued", poll_after_seconds=0.1)
+                            if request.operation == "editor.document.attest"
+                            else dict(
+                                job_id="job",
+                                state="completed",
+                                revision=1,
+                                result=value,
+                            )
+                        )
+                        if asynchronous
+                        else value,
                     )
                 )
 
@@ -300,3 +337,10 @@ async def test_bootstrap_requires_independent_exact_trusted_artifact(
                             mode="capture",
                         ),
                     )
+
+
+async def test_async_attestation_preserves_acceptance(tmp_path: Path) -> None:
+    async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
+        async with connected(core, "initial", evidence(), asynchronous=True):
+            key, revision = await establish(core)
+            assert await state(core, key) == ("accepted", revision)
