@@ -27,8 +27,10 @@ from .test_continuity import establish, evidence
 
 
 @asynccontextmanager
-async def editor(core: AdapterServer) -> AsyncIterator[dict[str, Any]]:
-    value = evidence()
+async def editor(
+    core: AdapterServer, instance: str = "initial"
+) -> AsyncIterator[dict[str, Any]]:
+    value = evidence(host="host" if instance == "initial" else "proof-host")
     value.update(
         resource_scope="strong-closure",
         resources=[
@@ -55,6 +57,7 @@ async def editor(core: AdapterServer) -> AsyncIterator[dict[str, Any]]:
             ),
             OperationContract(
                 name="editor.change",
+                tags=("recovery_replay",),
                 description="Change authored content",
                 arguments_schema={"type": "object"},
                 result_schema={"type": "object"},
@@ -84,7 +87,7 @@ async def editor(core: AdapterServer) -> AsyncIterator[dict[str, Any]]:
             await fake.send(
                 AdapterRegistration(
                     type="adapter.register",
-                    instance_id="initial",
+                    instance_id=instance,
                     application="editor",
                     project_id="saved",
                     operations=tuple(contracts),

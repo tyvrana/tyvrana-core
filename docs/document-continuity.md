@@ -87,3 +87,47 @@ Historical views also use durable acceptance entries already present in the proj
 journal and named checkpoints. A checkpoint alone proves historical accepted status;
 it does not invent an exact acceptance revision or an expanded resource snapshot.
 Reading this evidence never restores current validity or changes semantic revision.
+
+## Recovering a known transition without a receipt
+
+`project.reconcile` is guarded recovery for work authored before mutation receipts
+were available. It does not accept a milestone or adopt arbitrary current content.
+Use normal authoring operations for new work.
+
+Provide the durable prior working digest, expected current digest, an unaccepted
+working stage, provenance, and a unique reconciliation ID. The explicit delta is
+at most 16 advertised typed operations (128 KiB total request); each step declares
+its owning entity in that stage. Raw geometry is not needed.
+
+The caller must supply a disposable independent adapter loaded with the exact
+trusted prior document. Core requires the same logical document and strong
+attestation format, but a different host. Preparing that proof document is an
+explicit lifecycle prerequisite; Core does not launch application processes.
+Only synchronous, artifact-free operations carrying the adapter's
+`recovery_replay` qualification may be replayed. Core uses existing guarded native
+mutation receipts on this proof adapter. The live document is observed read-only.
+A failed attempt can leave the disposable proof document changed; reset it to the
+trusted prior content before a new attempt.
+
+Core requires the complete replayed content digest and scoped resource observations
+to equal the fresh live result exactly. Extra objects, unexplained material edits,
+and mismatched operation parameters therefore reject recovery. Bound resources
+outside the working stage are protected, including prerequisite dependency
+closures. Retained acceptance history must show unchanged semantic claims; only
+recorded freshness invalidation may be restored. This operation currently proves
+one document, and rejects prerequisites needing evidence from another document.
+Missing history, incomplete attestation, resource drift and wrong lineage fail
+closed. There is no force or trust-current option.
+
+Success atomically advances project revision once, stores the correlated replay
+proof, restores only proved prerequisite freshness, activates the unaccepted
+working stage, and establishes its new trusted working digest. Historical
+acceptance revisions and snapshots remain unchanged. Ordinary mutation receipts,
+saving and working checkpoints resume afterward.
+
+The operation returns a completed/failed result or a retained running job after
+20 seconds; observe it using `project.reconcile_status`. Repeating the identical
+successful request with the same ID returns its original commit without revision
+churn. Changing the payload under that ID rejects. Interrupted work never commits
+a partial head and is reported failed after restart. A completed result describes
+that historical reconciliation, not a new live attestation.

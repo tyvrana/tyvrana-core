@@ -1362,7 +1362,8 @@ class ProjectStore:
                 "project_id=? AND milestone_id=? UNION ALL "
                 "SELECT revision FROM journal WHERE project_id=? AND "
                 "kind='milestone' AND id=? AND "
-                "json_extract(data,'$.status')='accepted')",
+                "json_extract(data,'$.status')='accepted' AND "
+                "json_extract(data,'$.action') IN ('created','updated'))",
                 (project_id, record.id, project_id, record.id),
             ).fetchone()
             accepted_revision = accepted_row[0] if accepted_row else None

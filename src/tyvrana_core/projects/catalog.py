@@ -23,10 +23,45 @@ from .models import (
     SearchResult,
     VerifyInput,
 )
+from .reconcile_models import ReconcileInput, ReconcileResult, ReconcileStatusInput
 
 DECLARATIONS: dict[
     str, tuple[type[BaseModel], type[BaseModel], Literal["read_only", "mutating"], str]
 ] = {
+    "project.reconcile": (
+        ReconcileInput,
+        ReconcileResult,
+        "mutating",
+        "Guarded recovery of a known pre-receipt working delta, never "
+        "trust-current adoption. "
+        "Require the durable prior_digest, exact expected_digest, "
+        "target unaccepted stage, "
+        "provenance and at most 16 typed owner-scoped delta steps. "
+        "proof_adapter_id must be a "
+        "disposable independent host already loaded with exactly the "
+        "trusted prior document. "
+        "Core replays only adapter-qualified recovery_replay operations "
+        "ON THE PROOF HOST; "
+        "the live document is read-only. Complete final content and "
+        "protected resource fingerprints "
+        "must match; unknown changes, changed accepted claims and "
+        "incomplete evidence reject. "
+        "Success restores proved prerequisite freshness, records a "
+        "recovery receipt and activates "
+        "the unaccepted working stage. Same reconciliation_id and "
+        "identical request are idempotent. "
+        "Running work is observed with project.reconcile_status. No "
+        "force flag or manual reacceptance.",
+    ),
+    "project.reconcile_status": (
+        ReconcileStatusInput,
+        ReconcileResult,
+        "read_only",
+        "Observe bounded guarded reconciliation by ID. Completed "
+        "results identify the historical "
+        "commit, not a new live attestation. Do not resubmit a "
+        "different delta under the same ID.",
+    ),
     "project.attest": (
         AttestInput,
         AttestResult,

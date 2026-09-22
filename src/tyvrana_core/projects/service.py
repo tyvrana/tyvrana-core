@@ -32,6 +32,8 @@ from .models import (
     VerifyInput,
 )
 from .mutations import WorkingMutations
+from .reconcile import Reconciliation
+from .reconcile_models import ReconcileInput, ReconcileStatusInput
 from .store import PACKET_BYTES, ProjectError, ProjectStore
 
 if TYPE_CHECKING:
@@ -45,6 +47,7 @@ class ProjectService:
         self.continuity = Continuity(self)
         self.attachments: dict[tuple[str, str], str] = {}
         self.mutations = WorkingMutations(self)
+        self.reconciliation = Reconciliation(self)
 
     async def environment(
         self, project_id: str
@@ -157,6 +160,8 @@ class ProjectService:
                     VerifyInput,
                     RemoveInput,
                     AttestInput,
+                    ReconcileInput,
+                    ReconcileStatusInput,
                 ),
             )
             connected = {
@@ -164,6 +169,10 @@ class ProjectService:
                 for a in self.core.registry.list()
             }
             project_id = self.store.select(request.project_id, connected)
+            if isinstance(request, ReconcileInput):
+                return await self.reconciliation.start(project_id, request)
+            if isinstance(request, ReconcileStatusInput):
+                return self.reconciliation.status(project_id, request.reconciliation_id)
             if isinstance(request, AttestInput):
                 return await self.continuity.attest(project_id, request)
             connections, applications = await self.environment(project_id)

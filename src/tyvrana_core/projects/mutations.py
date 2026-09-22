@@ -10,7 +10,11 @@ from tyvrana_protocol import (
     OperationSuccess,
     ResourceReference,
 )
-from tyvrana_protocol.mutations import DocumentMutationJob, DocumentMutationRequest
+from tyvrana_protocol.mutations import (
+    DocumentMutationJob,
+    DocumentMutationRequest,
+    DocumentMutationResult,
+)
 
 from .continuity import AttestInput, Baseline
 from .models import Binding, Change
@@ -156,33 +160,7 @@ class WorkingMutations:
                         for b in bindings
                     ],
                 )
-                response = await service.core.dispatcher.execute(
-                    adapter_id=registration.instance_id,
-                    operation=mutations[0].name,
-                    arguments=args.model_dump(mode="json"),
-                    _internal=True,
-                )
-                job = DocumentMutationJob.model_validate(response.result)
-                delay = job.poll_after_seconds
-                async with asyncio.timeout(180):
-                    while job.state in {"queued", "running"}:
-                        await asyncio.sleep(delay)
-                        response = await service.core.dispatcher.execute(
-                            adapter_id=registration.instance_id,
-                            operation=statuses[0].name,
-                            arguments={"job_id": job.job_id},
-                            _internal=True,
-                        )
-                        job = DocumentMutationJob.model_validate(response.result)
-                        delay = min(2.0, delay * 1.5)
-                if job.state != "completed" or job.result is None:
-                    raise ProjectError(
-                        job.error.code if job.error else "mutation_incomplete",
-                        job.error.message
-                        if job.error
-                        else "Native mutation did not complete",
-                    )
-                receipt = job.result
+                receipt = await self.guarded(registration, args)
                 if receipt.mutation_id != request.request_id:
                     raise ProjectError(
                         "mutation_receipt_invalid", "Receipt correlation mismatch"
@@ -307,3 +285,42 @@ class WorkingMutations:
                         (json.dumps(intent), request.request_id),
                     )
                 raise
+
+    async def guarded(
+        self, registration: AdapterRegistration, args: DocumentMutationRequest
+    ) -> DocumentMutationResult:
+        mutations = [
+            c for c in registration.operations if "document_mutation" in c.tags
+        ]
+        statuses = [
+            c for c in registration.operations if "document_mutation_status" in c.tags
+        ]
+        if len(mutations) != 1 or len(statuses) != 1:
+            raise ProjectError(
+                "mutation_unsupported", "Adapter lacks guarded mutation receipts"
+            )
+        response = await self.service.core.dispatcher.execute(
+            adapter_id=registration.instance_id,
+            operation=mutations[0].name,
+            arguments=args.model_dump(mode="json"),
+            _internal=True,
+        )
+        job = DocumentMutationJob.model_validate(response.result)
+        delay = job.poll_after_seconds
+        async with asyncio.timeout(180):
+            while job.state in {"queued", "running"}:
+                await asyncio.sleep(delay)
+                response = await self.service.core.dispatcher.execute(
+                    adapter_id=registration.instance_id,
+                    operation=statuses[0].name,
+                    arguments={"job_id": job.job_id},
+                    _internal=True,
+                )
+                job = DocumentMutationJob.model_validate(response.result)
+                delay = min(2.0, delay * 1.5)
+        if job.state != "completed" or job.result is None:
+            raise ProjectError(
+                job.error.code if job.error else "mutation_incomplete",
+                job.error.message if job.error else "Native mutation did not complete",
+            )
+        return job.result
