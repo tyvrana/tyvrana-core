@@ -116,8 +116,8 @@ repair remain possible. See [project-state contracts](docs/project-state.md).
 
 This guidance does not technically prevent external clients from using other
 capabilities they possess. Operation validation, limits and adapter safety checks
-remain enforced in code. Provenance or external-mutation detection may be added
-if concrete workflow needs justify it; no such policing is currently implemented.
+remain enforced in code. Attestation-capable adapters detect unexplained content divergence and qualify
+authorized working mutations; see [document continuity](docs/document-continuity.md).
 
 ### Tools
 

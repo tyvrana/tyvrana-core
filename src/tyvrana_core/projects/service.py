@@ -31,6 +31,7 @@ from .models import (
     SearchResult,
     VerifyInput,
 )
+from .mutations import WorkingMutations
 from .store import PACKET_BYTES, ProjectError, ProjectStore
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ class ProjectService:
         self.store = ProjectStore(path)
         self.continuity = Continuity(self)
         self.attachments: dict[tuple[str, str], str] = {}
+        self.mutations = WorkingMutations(self)
 
     async def environment(
         self, project_id: str
@@ -209,15 +211,29 @@ class ProjectService:
                             "document_attestation" in c.tags
                             for c in candidates[0].registration.operations
                         ):
-                            if not await self.continuity.resolve(project_id, document):
-                                raise ProjectError(
-                                    "attestation_required",
-                                    (
-                                        "Establish matching strong evidence "
-                                        "with project.attest "
-                                        "before accepting/checkpointing this document"
+                            if (
+                                self.continuity.baseline(project_id, document.id)
+                                is None
+                            ):
+                                await self.continuity.attest(
+                                    project_id,
+                                    AttestInput(
+                                        project_id=project_id,
+                                        document_id=document.id,
+                                        adapter_id=candidates[0].instance_id,
+                                        expected_revision=request.expected_revision,
                                     ),
                                 )
+                                connections, applications = await self.environment(
+                                    project_id
+                                )
+                            if not await self.continuity.resolve(project_id, document):
+                                raise ProjectError(
+                                    "content_diverged",
+                                    "Checkpoint requires a trusted current "
+                                    "working head",
+                                )
+
                 return self.store.apply(
                     project_id,
                     request,

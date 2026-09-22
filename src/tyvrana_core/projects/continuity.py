@@ -51,6 +51,8 @@ class Baseline(Model):
     document_session_id: str
     provenance: str
     artifact_sha256: str | None = None
+    resources: list[dict[str, object]] = Field(default_factory=list)
+    resource_scope: str | None = None
 
 
 class Continuity:
@@ -335,6 +337,8 @@ class Continuity:
             document_session_id=evidence.document_session_id,
             provenance=request.provenance
             or "Verified content at the bound application document",
+            resources=[r.model_dump(mode="json") for r in evidence.resources],
+            resource_scope=evidence.resource_scope,
             artifact_sha256=request.trusted_artifact_sha256
             if request.mode == "bootstrap"
             else (baseline.artifact_sha256 if baseline else None),

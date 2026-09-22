@@ -26,8 +26,8 @@ Existing resource observation context fields carry the stable verification conte
 once attested; the baseline never depends on a new WebSocket connection ID.
 
 For attestation-capable documents, `project.apply` requires matching strong evidence
-before accepting milestones or creating a checkpoint. Bind, verify resources and
-capture content first. Unsupported/incomplete content must be resolved, not accepted
+before accepting milestones or creating a checkpoint. Bind and verify resources first; the acceptance/checkpoint flow obtains
+initial strong evidence automatically when absent. Unsupported/incomplete content must be resolved, not accepted
 through a weaker fingerprint fallback.
 
 Live reads observe current adapter evidence and resolve exactly one matching
@@ -49,3 +49,36 @@ backoff, validates final evidence and then applies the existing identity/content
 policy. The global dispatcher timeout is unchanged. An observation pending after
 20 seconds returns its job ID and status operation; no incomplete evidence is
 accepted as a strong baseline.
+
+## Accepted checkpoints and current working content
+
+Accepted milestones retain immutable semantic and document-evidence snapshots.
+Record views report historical acceptance separately from current prerequisite
+validity. The document baseline is the current trusted working head; it can advance
+through authorized downstream work without replacing an accepted checkpoint.
+
+For adapters advertising guarded mutation receipts, Core serializes mutation intents
+and records the operation, active stage, revision and before digest durably. The
+adapter checks that head, runs the requested advertised operation and returns complete
+before/after evidence with matching identity and scope. Core commits the receipt,
+working head, authored revision and dependency invalidation atomically. Failed or
+rolled-back work does not advance the head. An uncertain changed outcome blocks.
+
+Actual changed bound-resource fingerprints and the active stage's declared outputs
+seed the existing semantic dependency graph. Unrelated additions preserve accepted
+prerequisites; changes to accepted resources or their dependencies stale affected
+bindings and validations, propagate to dependent milestones, and retain historical
+acceptance. Unexplained external content changes never advance the working head.
+
+Normal `project.apply` acceptance/checkpoint creation obtains initial strong evidence
+when absent. Later checkpoints record the qualified current working digest and format
+without a separate capture/bind/retry sequence. Saving during a downstream stage is
+an ordinary guarded operation, not milestone acceptance. Working mutations and named
+checkpoints advance semantic revision; reload/reconnect and exact reattachment do not.
+
+Core observes guarded work with bounded backoff. Work exceeding the 20-second caller
+window returns `mutation_pending` and continues under the original intent; do not
+blindly resubmit it. Shutdown or an unqualified result leaves the intent uncommitted.
+Synchronous artifact-free mutations are supported; adapters reject unsupported nested
+job/artifact contracts before invoking them. This does not retroactively authorize
+content created before mutation tracking or repair an already diverged document.

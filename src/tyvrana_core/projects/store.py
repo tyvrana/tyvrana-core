@@ -95,6 +95,19 @@ class ProjectStore:
                 db.executescript("""
                     PRAGMA journal_mode=WAL;
                     PRAGMA foreign_keys=ON;
+                    CREATE TABLE IF NOT EXISTS document_mutations (
+                        id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                        document_id TEXT NOT NULL, data TEXT NOT NULL,
+                        FOREIGN KEY(project_id) REFERENCES projects(id)
+                        ON DELETE CASCADE
+                    );
+                    CREATE TABLE IF NOT EXISTS milestone_acceptances (
+                        project_id TEXT NOT NULL, milestone_id TEXT NOT NULL,
+                        revision INTEGER NOT NULL, data TEXT NOT NULL,
+                        PRIMARY KEY(project_id,milestone_id,revision),
+                        FOREIGN KEY(project_id) REFERENCES projects(id)
+                        ON DELETE CASCADE
+                    );
                     CREATE TABLE IF NOT EXISTS projects (
                         id TEXT PRIMARY KEY, data TEXT NOT NULL
                     );
@@ -699,6 +712,20 @@ class ProjectStore:
             documents=documents[:16],
             document_count=len(documents),
             validation_counts=dict(counts),
+            document_states={
+                r[0]: {
+                    k: json.loads(r[1])[k] for k in ("format", "digest", "context_id")
+                }
+                for r in db.execute(
+                    "SELECT document_id,data FROM document_attestations WHERE "
+                    "project_id=?",
+                    (project.id,),
+                )
+            }
+            if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='document_attestations'"
+            ).fetchone()
+            else {},
         )
         db.execute(
             "INSERT INTO checkpoints VALUES (?,?,?,?)",
@@ -1027,6 +1054,43 @@ class ProjectStore:
                         label=Checkpoint.model_validate_json(marker[0]).label,
                     ),
                 )
+            for milestone_id in sorted(accepted):
+                snapshot_records = [
+                    json.loads(r[0])
+                    for r in db.execute(
+                        "SELECT data FROM records WHERE project_id=? ORDER BY id",
+                        (project_id,),
+                    )
+                ]
+                snapshots = {}
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='document_attestations'"
+                ).fetchone():
+                    snapshots = {
+                        r[0]: json.loads(r[1])
+                        for r in db.execute(
+                            "SELECT document_id,data FROM "
+                            "document_attestations WHERE project_id=?",
+                            (project_id,),
+                        )
+                    }
+                db.execute(
+                    "INSERT INTO milestone_acceptances VALUES (?,?,?,?)",
+                    (
+                        project_id,
+                        milestone_id,
+                        revision,
+                        json.dumps(
+                            {
+                                "milestone_id": milestone_id,
+                                "revision": revision,
+                                "records": snapshot_records,
+                                "documents": snapshots,
+                            },
+                            sort_keys=True,
+                        ),
+                    ),
+                )
             checkpoint = self._checkpoint(db, project, request, connections or {})
             project = self._compact(db, project)
             # UPDATE avoids REPLACE's delete/cascade semantics for existing projects.
@@ -1073,6 +1137,7 @@ class ProjectStore:
         connections: dict[str, str],
         artifacts: set[str],
         attached_documents: dict[str, str] | None = None,
+        invalidate: bool = True,
     ) -> None:
         "Check the bound contract and invalidate its write scope before dispatch."
         if not self.path.exists():
@@ -1129,6 +1194,8 @@ class ProjectStore:
                     stage=active.id,
                     document_id=document.id,
                 )
+            if not invalidate:
+                return
             self._invalidate(
                 db,
                 application,
@@ -1286,7 +1353,23 @@ class ProjectStore:
                     if record.artifact_id in available_artifacts
                     else "expired"
                 )
+        historical: Literal["accepted"] | None = None
+        accepted_revision = None
+        if isinstance(record, Milestone):
+            accepted_row = db.execute(
+                "SELECT max(revision) FROM milestone_acceptances WHERE "
+                "project_id=? AND milestone_id=?",
+                (project_id, record.id),
+            ).fetchone()
+            accepted_revision = accepted_row[0] if accepted_row else None
+            if (
+                accepted_revision is not None
+                or Milestone.model_validate_json(row["data"]).status == "accepted"
+            ):
+                historical = "accepted"
         return RecordView(
+            historical_status=historical,
+            accepted_revision=accepted_revision,
             record=record,
             changed_revision=row["revision"],
             binding=binding,

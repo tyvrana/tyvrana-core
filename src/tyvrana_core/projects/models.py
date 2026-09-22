@@ -188,6 +188,7 @@ class CheckpointInput(Model):
 
 
 class Checkpoint(CheckpointInput):
+    document_states: dict[str, dict[str, str]] = Field(default_factory=dict)
     revision: int
     stage: Stage
     created_at: str
@@ -299,6 +300,10 @@ class BindingObservation(Model):
 
 
 class RecordView(Model):
+    historical_status: Literal["accepted"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    accepted_revision: int | None = Field(default=None, exclude_if=lambda v: v is None)
     record: SemanticRecord
     changed_revision: int
     binding: BindingObservation | None = Field(

@@ -25,11 +25,17 @@ class OperationDispatcher:
         default_timeout: float,
         artifacts: ArtifactStore,
         before_mutation: Callable[[AdapterRegistration], Awaitable[None]] | None = None,
+        managed_mutation: Callable[
+            [AdapterRegistration, OperationRequest, float],
+            Awaitable[OperationSuccess | None],
+        ]
+        | None = None,
     ) -> None:
         self._registry = registry
         self._default_timeout = default_timeout
         self._artifacts = artifacts
         self._before_mutation = before_mutation
+        self._managed_mutation = managed_mutation
 
     @property
     def pending_count(self) -> int:
@@ -43,6 +49,7 @@ class OperationDispatcher:
         arguments: JsonValue,
         artifact_ids: tuple[str, ...] = (),
         timeout: float | None = None,
+        _internal: bool = False,
     ) -> OperationSuccess:
         """Execute an operation; cancelling the caller requests remote cancellation.
 
@@ -67,7 +74,19 @@ class OperationDispatcher:
         contract = next(
             c for c in connection.registration.operations if c.name == operation
         )
-        if contract.effect == "mutating" and self._before_mutation is not None:
+        if "document_mutation" in contract.tags and not _internal:
+            raise UnsupportedOperation(adapter_id, operation)
+        if contract.effect == "mutating" and not _internal and self._managed_mutation:
+            managed = await self._managed_mutation(
+                connection.registration, request, limit
+            )
+            if managed is not None:
+                return managed
+        if (
+            contract.effect == "mutating"
+            and not _internal
+            and self._before_mutation is not None
+        ):
             started = asyncio.get_running_loop().time()
             try:
                 async with asyncio.timeout(limit):

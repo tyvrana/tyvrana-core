@@ -49,6 +49,7 @@ class AdapterServer:
             self.config.operation_timeout,
             self.artifacts,
             before_mutation=self.projects.before_mutation,
+            managed_mutation=self.projects.mutations.execute,
         )
         self._server: Server | None = None
         self._stopping = False
@@ -97,6 +98,7 @@ class AdapterServer:
                 self.artifacts.close()
                 return
             self._stopping = True
+            await self.projects.mutations.shutdown()
             self._server.close()
             for connection in self.registry._all_connections():
                 connection.disconnect("Server shutting down")

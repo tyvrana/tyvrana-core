@@ -225,9 +225,30 @@ def test_current_evidence_allows_progress_and_upstream_change_is_selective(
     assert current(store, key, "qb").freshness == "stale"
     assert current(store, key, "c").status == "accepted"
     assert current(store, key, "qc").freshness == "current"
+    historical = store.search(key, SearchInput(ids=["a", "b"])).records
+    assert all(v.historical_status == "accepted" for v in historical)
+    assert all(v.accepted_revision is not None for v in historical)
     # Merely reaccepting the prerequisite does not resurrect downstream acceptance.
     accept(store, key, "a")
     assert current(store, key, "b").status == "invalidated"
+
+
+def test_removing_project_releases_acceptance_history(
+    contract: tuple[ProjectStore, str],
+) -> None:
+    store, key = contract
+    accept(store, key, "a")
+    revision = store.search(key, SearchInput()).revision
+    assert revision is not None
+    with store.transaction() as db:
+        assert (
+            db.execute("SELECT count(*) FROM milestone_acceptances").fetchone()[0] == 1
+        )
+    store.remove(key, revision, key)
+    with store.transaction() as db:
+        assert (
+            db.execute("SELECT count(*) FROM milestone_acceptances").fetchone()[0] == 0
+        )
 
 
 def test_evidence_change_invalidates_dependents(
