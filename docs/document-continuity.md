@@ -82,3 +82,8 @@ blindly resubmit it. Shutdown or an unqualified result leaves the intent uncommi
 Synchronous artifact-free mutations are supported; adapters reject unsupported nested
 job/artifact contracts before invoking them. This does not retroactively authorize
 content created before mutation tracking or repair an already diverged document.
+
+Historical views also use durable acceptance entries already present in the project
+journal and named checkpoints. A checkpoint alone proves historical accepted status;
+it does not invent an exact acceptance revision or an expanded resource snapshot.
+Reading this evidence never restores current validity or changes semantic revision.

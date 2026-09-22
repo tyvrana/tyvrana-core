@@ -629,3 +629,26 @@ def test_required_checks_inherit_scope_and_criteria_changes_require_revalidation
     )
     assert current(store, key, "qa").freshness == "stale"
     assert current(store, key, "b").status == "invalidated"
+
+
+def test_historical_acceptance_uses_existing_journal_and_checkpoint(
+    contract: tuple[ProjectStore, str],
+) -> None:
+    store, key = contract
+    accept(store, key, "a")
+    accepted_revision = store.search(key, SearchInput()).revision
+    apply(store, key, checkpoint={"id": "accepted", "label": "Accepted foundation"})
+    # Existing durable history may have no expanded resource snapshot.
+    with store.transaction(write=True) as db:
+        db.execute("DELETE FROM milestone_acceptances WHERE project_id=?", (key,))
+    apply(store, key, upsert=[Entity(id="foundation", label="Changed foundation")])
+    view = store.search(key, SearchInput(ids=["a"])).records[0]
+    assert isinstance(view.record, Milestone)
+    assert view.record.status == "invalidated"
+    assert view.historical_status == "accepted"
+    assert view.accepted_revision == accepted_revision
+    with store.transaction(write=True) as db:
+        db.execute("DELETE FROM journal WHERE project_id=?", (key,))
+    view = store.search(key, SearchInput(ids=["a"])).records[0]
+    assert view.historical_status == "accepted"
+    assert view.accepted_revision is None  # Checkpoint proves status, not exact time.

@@ -1357,13 +1357,27 @@ class ProjectStore:
         accepted_revision = None
         if isinstance(record, Milestone):
             accepted_row = db.execute(
-                "SELECT max(revision) FROM milestone_acceptances WHERE "
-                "project_id=? AND milestone_id=?",
-                (project_id, record.id),
+                "SELECT max(revision) FROM ("
+                "SELECT revision FROM milestone_acceptances WHERE "
+                "project_id=? AND milestone_id=? UNION ALL "
+                "SELECT revision FROM journal WHERE project_id=? AND "
+                "kind='milestone' AND id=? AND "
+                "json_extract(data,'$.status')='accepted')",
+                (project_id, record.id, project_id, record.id),
             ).fetchone()
             accepted_revision = accepted_row[0] if accepted_row else None
+            checkpoint_acceptance = (
+                accepted_revision is None
+                and db.execute(
+                    "SELECT 1 FROM checkpoints c, "
+                    "json_each(c.data,'$.accepted_milestones') a "
+                    "WHERE c.project_id=? AND a.value=? LIMIT 1",
+                    (project_id, record.id),
+                ).fetchone()
+            )
             if (
                 accepted_revision is not None
+                or checkpoint_acceptance
                 or Milestone.model_validate_json(row["data"]).status == "accepted"
             ):
                 historical = "accepted"
