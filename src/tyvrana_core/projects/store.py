@@ -1072,6 +1072,7 @@ class ProjectStore:
         adapter_id: str,
         connections: dict[str, str],
         artifacts: set[str],
+        attached_documents: dict[str, str] | None = None,
     ) -> None:
         "Check the bound contract and invalidate its write scope before dispatch."
         if not self.path.exists():
@@ -1090,7 +1091,10 @@ class ProjectStore:
                 row
                 for row in candidates
                 if (
-                    (document := Document.model_validate_json(row["data"])).adapter_id
+                    (attached_documents or {}).get(
+                        (document := Document.model_validate_json(row["data"])).id,
+                        document.adapter_id,
+                    )
                     == adapter_id
                     and document.application_project_id == application_project_id
                 )

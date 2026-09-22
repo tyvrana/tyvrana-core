@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel
 from tyvrana_protocol import OperationContract
 
+from .continuity import AttestInput, AttestResult
 from .models import (
     ApplyInput,
     ApplyResult,
@@ -26,6 +27,19 @@ from .models import (
 DECLARATIONS: dict[
     str, tuple[type[BaseModel], type[BaseModel], Literal["read_only", "mutating"], str]
 ] = {
+    "project.attest": (
+        AttestInput,
+        AttestResult,
+        "mutating",
+        (
+            "Establish strong document verification metadata or reattach "
+            "exact accepted content. Capture requires current binding; "
+            "reattach requires matching durable digest; bootstrap "
+            "requires an independently loaded trusted artifact SHA256 and"
+            " provenance. Never marks milestones accepted. No semantic "
+            "revision churn for attachment metadata."
+        ),
+    ),
     "project.create": (
         CreateInput,
         Project,

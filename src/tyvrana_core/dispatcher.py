@@ -1,7 +1,8 @@
 """Route operations to a registered adapter and preserve remote failures."""
 
+import asyncio
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
 from tyvrana_protocol import (
@@ -13,7 +14,7 @@ from tyvrana_protocol import (
 )
 
 from .artifacts import ArtifactStore
-from .errors import RemoteOperationError, UnsupportedOperation
+from .errors import OperationTimeout, RemoteOperationError, UnsupportedOperation
 from .registry import AdapterRegistry
 
 
@@ -23,7 +24,7 @@ class OperationDispatcher:
         registry: AdapterRegistry,
         default_timeout: float,
         artifacts: ArtifactStore,
-        before_mutation: Callable[[AdapterRegistration], None] | None = None,
+        before_mutation: Callable[[AdapterRegistration], Awaitable[None]] | None = None,
     ) -> None:
         self._registry = registry
         self._default_timeout = default_timeout
@@ -67,7 +68,13 @@ class OperationDispatcher:
             c for c in connection.registration.operations if c.name == operation
         )
         if contract.effect == "mutating" and self._before_mutation is not None:
-            self._before_mutation(connection.registration)
+            started = asyncio.get_running_loop().time()
+            try:
+                async with asyncio.timeout(limit):
+                    await self._before_mutation(connection.registration)
+            except TimeoutError as exc:
+                raise OperationTimeout(adapter_id, request.request_id, limit) from exc
+            limit = max(0.000001, limit - (asyncio.get_running_loop().time() - started))
         response = await connection.request(request, limit)
         if isinstance(response, OperationFailure):
             raise RemoteOperationError(adapter_id, request.request_id, response.error)

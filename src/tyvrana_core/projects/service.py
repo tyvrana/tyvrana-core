@@ -15,6 +15,7 @@ from tyvrana_protocol import (
 )
 
 from .catalog import DECLARATIONS
+from .continuity import AttestInput, Continuity
 from .models import (
     ApplicationStatus,
     ApplyInput,
@@ -40,13 +41,34 @@ class ProjectService:
     def __init__(self, core: "AdapterServer", path: Path) -> None:
         self.core = core
         self.store = ProjectStore(path)
+        self.continuity = Continuity(self)
+        self.attachments: dict[tuple[str, str], str] = {}
 
-    def environment(
+    async def environment(
         self, project_id: str
     ) -> tuple[dict[str, str], list[ApplicationStatus]]:
         connections: dict[str, str] = {}
         statuses = []
         for document in self.store.documents(project_id):
+            resolved = await self.continuity.resolve(project_id, document)
+            baseline = self.continuity.baseline(project_id, document.id)
+            if baseline is not None:
+                self.attachments.pop((project_id, document.id), None)
+                if resolved:
+                    adapter, context = resolved
+                    self.attachments[project_id, document.id] = adapter.instance_id
+                    connections[document.id] = context
+                statuses.append(
+                    ApplicationStatus(
+                        document_id=document.id,
+                        application=document.application,
+                        application_project_id=document.application_project_id,
+                        adapter_ids=[resolved[0].instance_id] if resolved else [],
+                        state="connected" if resolved else "unavailable",
+                        locator=None,
+                    )
+                )
+                continue
             matches = [
                 a
                 for a in self.core.registry.list()
@@ -68,20 +90,26 @@ class ProjectService:
             )
         return connections, statuses
 
-    def before_mutation(self, registration: AdapterRegistration) -> None:
+    async def before_mutation(self, registration: AdapterRegistration) -> None:
         connections: dict[str, str] = {}
+        project = None
         if registration.project_id:
             project = self.store.document_project(
                 registration.application, registration.project_id
             )
             if project:
-                connections, _ = self.environment(project.id)
+                connections, _ = await self.environment(project.id)
         self.store.prepare_mutation(
             registration.application,
             registration.project_id,
             registration.instance_id,
             connections,
             set(self.core.artifacts.available_ids),
+            attached_documents={
+                doc: adapter
+                for (key, doc), adapter in self.attachments.items()
+                if project and key == project.id
+            },
         )
 
     async def execute(self, operation: str, arguments: JsonValue) -> BaseModel:
@@ -126,6 +154,7 @@ class ProjectService:
                     SearchInput,
                     VerifyInput,
                     RemoveInput,
+                    AttestInput,
                 ),
             )
             connected = {
@@ -133,7 +162,9 @@ class ProjectService:
                 for a in self.core.registry.list()
             }
             project_id = self.store.select(request.project_id, connected)
-            connections, applications = self.environment(project_id)
+            if isinstance(request, AttestInput):
+                return await self.continuity.attest(project_id, request)
+            connections, applications = await self.environment(project_id)
             if isinstance(request, RemoveInput):
                 self.store.remove(
                     project_id, request.expected_revision, request.confirm_project_id
@@ -156,6 +187,37 @@ class ProjectService:
                         ]
                         if len(matches) == 1:
                             connections[record.id] = matches[0].connection_id
+                if request.checkpoint or any(
+                    getattr(r, "kind", None) == "milestone"
+                    and getattr(r, "status", None) == "accepted"
+                    for r in request.upsert
+                ):
+                    documents = {d.id: d for d in self.store.documents(project_id)}
+                    documents.update(
+                        {r.id: r for r in request.upsert if isinstance(r, Document)}
+                    )
+                    for document in documents.values():
+                        candidates = [
+                            a
+                            for a in self.core.registry.list()
+                            if a.instance_id
+                            == self.attachments.get(
+                                (project_id, document.id), document.adapter_id
+                            )
+                        ]
+                        if candidates and any(
+                            "document_attestation" in c.tags
+                            for c in candidates[0].registration.operations
+                        ):
+                            if not await self.continuity.resolve(project_id, document):
+                                raise ProjectError(
+                                    "attestation_required",
+                                    (
+                                        "Establish matching strong evidence "
+                                        "with project.attest "
+                                        "before accepting/checkpointing this document"
+                                    ),
+                                )
                 return self.store.apply(
                     project_id,
                     request,
@@ -238,7 +300,8 @@ class ProjectService:
                 for a in self.core.registry.list()
                 if a.registration.application == document.application
                 and a.registration.project_id == document.application_project_id
-                and a.instance_id == document.adapter_id
+                and a.instance_id
+                == self.attachments.get((project_id, document.id), document.adapter_id)
                 and (request.adapter_id is None or a.instance_id == request.adapter_id)
             ]
             if len(matches) != 1:
@@ -321,7 +384,9 @@ class ProjectService:
                     name=obs.name,
                     fingerprint=obs.fingerprint,
                     fingerprint_scope=observed.fingerprint_scope,
-                    connection_id=adapter.connection_id,
+                    connection_id=(await self.environment(project_id))[0].get(
+                        document.id, adapter.connection_id
+                    ),
                 )
         for adapter_id, session in checked.items():
             if self.core.registry.get(adapter_id).connection_id != session:
@@ -337,7 +402,7 @@ class ProjectService:
                 project=ProjectPatch(),
                 upsert=list(refreshed_documents),
             ),
-            connections=self.environment(project_id)[0],
+            connections=(await self.environment(project_id))[0],
             observations=observations,
             artifacts=set(self.core.artifacts.available_ids),
         )
