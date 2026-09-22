@@ -41,3 +41,11 @@ it does not require manually re-accepting milestones.
 All comparisons require complete evidence in the same content format. Resource
 structural fingerprints remain useful identity observations; they are not substitutes
 for whole-document attestation. Baseline provenance does not make Core a visual critic.
+
+
+Document observations may use the shared typed attestation job envelope. Core
+discovers the read-only status contract by semantic tag, observes with bounded
+backoff, validates final evidence and then applies the existing identity/content
+policy. The global dispatcher timeout is unchanged. An observation pending after
+20 seconds returns its job ID and status operation; no incomplete evidence is
+accepted as a strong baseline.
