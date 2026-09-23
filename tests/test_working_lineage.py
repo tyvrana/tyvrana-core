@@ -12,6 +12,8 @@ from tyvrana_protocol import (
     AdapterEvent,
     AdapterRegistration,
     DocumentAttestation,
+    DocumentRestoreJob,
+    DocumentRestoreRequest,
     OperationContract,
     OperationRequest,
     OperationSuccess,
@@ -28,7 +30,9 @@ from .test_continuity import establish, evidence
 
 @asynccontextmanager
 async def editor(
-    core: AdapterServer, instance: str = "initial"
+    core: AdapterServer,
+    instance: str = "initial",
+    restores: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     value = evidence(host="host" if instance == "initial" else "proof-host")
     value.update(
@@ -63,6 +67,33 @@ async def editor(
                 result_schema={"type": "object"},
                 effect="mutating",
                 execution="synchronous",
+            ),
+            OperationContract(
+                name="editor.file.open",
+                description="Open trusted file",
+                tags=("document_open",),
+                arguments_schema={"type": "object"},
+                result_schema={"type": "object"},
+                effect="mutating",
+                execution="synchronous",
+            ),
+            OperationContract(
+                name="editor.document.restore",
+                description="Guard replacement",
+                tags=("document_restore",),
+                arguments_schema=DocumentRestoreRequest.model_json_schema(),
+                result_schema=DocumentRestoreJob.model_json_schema(),
+                effect="mutating",
+                execution="job_start",
+            ),
+            OperationContract(
+                name="editor.document.restore_status",
+                description="Observe restore",
+                tags=("document_restore_status",),
+                arguments_schema={"type": "object"},
+                result_schema=DocumentRestoreJob.model_json_schema(),
+                effect="read_only",
+                execution="job_status",
             ),
             OperationContract(
                 name="editor.document.mutate",
@@ -104,6 +135,37 @@ async def editor(
                 assert isinstance(request, OperationRequest)
                 if request.operation == "editor.document.attest":
                     result = copy.deepcopy(value)
+                elif request.operation == "editor.document.restore":
+                    restore = DocumentRestoreRequest.model_validate(request.arguments)
+                    if restores is not None:
+                        restores.append(restore.model_dump(mode="json"))
+                    before = copy.deepcopy(value)
+                    assert isinstance(restore.arguments, dict)
+                    if restore.arguments.get("load_failure"):
+                        result = dict(
+                            job_id=restore.mutation_id,
+                            state="failed",
+                            error=dict(
+                                code="file_open_failed", message="Fixture load failed"
+                            ),
+                        )
+                    else:
+                        value.update(
+                            restore.target.model_dump(), document_session_id="restored"
+                        )
+                        value["resources"][0]["fingerprint"] = "base-original"
+                        if restore.arguments.get("post_mismatch"):
+                            value["digest"] = "f" * 64
+                        result = dict(
+                            job_id=restore.mutation_id,
+                            state="completed",
+                            result=dict(
+                                mutation_id=restore.mutation_id,
+                                result={},
+                                before=before,
+                                after=copy.deepcopy(value),
+                            ),
+                        )
                 else:
                     guard = DocumentMutationRequest.model_validate(request.arguments)
                     assert guard.digest == value["digest"]

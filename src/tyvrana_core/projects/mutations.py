@@ -230,9 +230,20 @@ class WorkingMutations:
                             changed,
                             connections,
                         )
+                    is_save = any(
+                        c.name == request.operation and "document_save" in c.tags
+                        for c in registration.operations
+                    )
                     updated = baseline.model_copy(
                         update={
                             "digest": receipt.after.digest,
+                            "artifact_sha256": receipt.after.file_sha256
+                            if is_save
+                            else (
+                                baseline.artifact_sha256
+                                if receipt.after.digest == receipt.before.digest
+                                else None
+                            ),
                             "resources": [
                                 r.model_dump(mode="json")
                                 for r in receipt.after.resources

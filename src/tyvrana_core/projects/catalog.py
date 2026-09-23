@@ -24,10 +24,36 @@ from .models import (
     VerifyInput,
 )
 from .reconcile_models import ReconcileInput, ReconcileResult, ReconcileStatusInput
+from .restore_models import RestoreInput, RestoreResult, RestoreStatusInput
 
 DECLARATIONS: dict[
     str, tuple[type[BaseModel], type[BaseModel], Literal["read_only", "mutating"], str]
 ] = {
+    "project.restore": (
+        RestoreInput,
+        RestoreResult,
+        "mutating",
+        "Explicitly discard the exact expected_current document and restore a trusted "
+        "saved working checkpoint or the durable baseline (omit "
+        "checkpoint_id). Requires "
+        "discard_current=true, provenance, and an independent proof_adapter_id already "
+        "loaded with the target artifact. Core verifies durable file/content/lineage "
+        "evidence before invoking the advertised document_open with open_arguments. "
+        "The adapter rechecks exact current state and file hash before load, then Core "
+        "verifies strong content before restoring recorded freshness and working head. "
+        "No force/trust-current option; no milestone reacceptance. New "
+        "hosts may be empty "
+        "or contain the same logical document. One document; unchanged semantic claims "
+        "required. Same restore_id/request observes retained work; use restore_status "
+        "when running. Already-current targets only reattach without revision churn.",
+    ),
+    "project.restore_status": (
+        RestoreStatusInput,
+        RestoreResult,
+        "read_only",
+        "Observe a retained trusted artifact restore without repeating "
+        "destructive load.",
+    ),
     "project.reconcile": (
         ReconcileInput,
         ReconcileResult,

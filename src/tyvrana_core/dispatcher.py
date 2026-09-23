@@ -74,7 +74,9 @@ class OperationDispatcher:
         contract = next(
             c for c in connection.registration.operations if c.name == operation
         )
-        if "document_mutation" in contract.tags and not _internal:
+        if {"document_mutation", "document_restore"}.intersection(
+            contract.tags
+        ) and not _internal:
             raise UnsupportedOperation(adapter_id, operation)
         if contract.effect == "mutating" and not _internal and self._managed_mutation:
             managed = await self._managed_mutation(

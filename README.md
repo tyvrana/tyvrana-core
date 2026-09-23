@@ -572,3 +572,35 @@ Application operations target the explicit `adapter_id`; Core never falls back t
 another instance. `core` is reserved for semantic project operations. Reconnection
 or extension reload requires rediscovery and deliberate target selection; verify
 stale semantic resource bindings before continuing.
+
+## Restoring a trusted artifact
+
+`project.restore` explicitly discards an observed divergent working document in
+favor of a durable saved baseline or named checkpoint. It requires
+`discard_current: true`, the expected project revision, and `expected_current`
+with the live host/document sessions, logical project identity, attestation format
+and strong digest. A separate `proof_adapter_id` must already have loaded the
+target artifact. Core requires its file SHA256, strong digest and document lineage
+to match durable evidence before dispatching the adapter's guarded typed open.
+The native adapter rechecks the current state and target file bytes immediately
+before loading. Normal mutations retain their existing divergence guard.
+
+Supply `checkpoint_id` for a saved working checkpoint; omit it for the durable
+trusted baseline. `open_arguments` follows the advertised document-open schema.
+Checkpoints capture immutable content and semantic freshness evidence; a target
+without saved artifact identity, or with changed semantic claims, is rejected.
+The current scope is a single bound document, without semantic graph rebasing.
+
+Restore uses the existing mutation ledger and native job lifecycle. Requests have
+a stable `restore_id`; repeat requests return the original result, and
+`project.restore_status` observes retained work without repeating a destructive
+load. File-open reconnects resume status observation only. A failed or interrupted
+load never promotes its content to trusted state. Post-load strong attestation
+and resource evidence must match the independent proof before Core restores the
+working head, runtime attachment and checkpoint freshness. Historical milestone
+acceptance and checkpoints remain immutable; later unproved claims stay stale.
+
+An actual content/freshness restore advances the project revision once. An
+already-current target or exact runtime reattachment does not advance it unless
+semantic freshness must change. Fresh application processes are supported;
+previous process, adapter and runtime session identifiers are not required.

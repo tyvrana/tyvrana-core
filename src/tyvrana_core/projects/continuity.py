@@ -341,7 +341,7 @@ class Continuity:
             resource_scope=evidence.resource_scope,
             artifact_sha256=request.trusted_artifact_sha256
             if request.mode == "bootstrap"
-            else (baseline.artifact_sha256 if baseline else None),
+            else (baseline.artifact_sha256 if baseline else evidence.file_sha256),
         )
         with store.transaction(write=True) as db:
             store.expect(store.project(db, project), request.expected_revision)

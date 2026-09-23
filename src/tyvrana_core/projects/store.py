@@ -148,6 +148,12 @@ class ProjectStore:
                         id TEXT NOT NULL, data TEXT NOT NULL,
                         PRIMARY KEY(project_id,revision,kind,id)
                     );
+                    CREATE TABLE IF NOT EXISTS checkpoint_contents (
+                        project_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL,
+                        PRIMARY KEY(project_id,id),
+                        FOREIGN KEY(project_id,id) REFERENCES checkpoints(project_id,id)
+                            ON DELETE CASCADE
+                    );
                     CREATE TABLE IF NOT EXISTS checkpoints (
                         project_id TEXT NOT NULL
                             REFERENCES projects(id) ON DELETE CASCADE,
@@ -714,7 +720,17 @@ class ProjectStore:
             validation_counts=dict(counts),
             document_states={
                 r[0]: {
-                    k: json.loads(r[1])[k] for k in ("format", "digest", "context_id")
+                    k: v
+                    for k, v in json.loads(r[1]).items()
+                    if k
+                    in (
+                        "format",
+                        "digest",
+                        "context_id",
+                        "artifact_sha256",
+                        "application_project_id",
+                    )
+                    and isinstance(v, str)
                 }
                 for r in db.execute(
                     "SELECT document_id,data FROM document_attestations WHERE "
@@ -730,6 +746,30 @@ class ProjectStore:
         db.execute(
             "INSERT INTO checkpoints VALUES (?,?,?,?)",
             (project.id, marker.id, project.revision, checkpoint.model_dump_json()),
+        )
+        content = {}
+        for table in ("records", "observations", "validation_context"):
+            content[table] = {
+                r[0]: json.loads(r[1])
+                for r in db.execute(
+                    f"SELECT id,data FROM {table} WHERE project_id=?", (project.id,)
+                )
+            }
+        content["documents"] = (
+            {
+                r[0]: json.loads(r[1])
+                for r in db.execute(
+                    "SELECT document_id,data FROM document_attestations "
+                    "WHERE project_id=?",
+                    (project.id,),
+                )
+            }
+            if checkpoint.document_states
+            else {}
+        )
+        db.execute(
+            "INSERT INTO checkpoint_contents VALUES (?,?,?)",
+            (project.id, marker.id, json.dumps(content)),
         )
         self._change(
             db,

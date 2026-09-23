@@ -174,6 +174,33 @@ class Reconciliation:
                 "reconciliation_prerequisite",
                 "Recovery requires an accepted prerequisite",
             )
+        protected = self.accepted_claims(
+            db, project, stages, request.document_id, baseline
+        )
+        if protected.intersection(target.entity_ids):
+            raise ProjectError(
+                "reconciliation_ownership", "Working ownership overlaps accepted claims"
+            )
+        bindings = [
+            Binding.model_validate_json(r[0])
+            for r in db.execute(
+                "SELECT data FROM records WHERE project_id=? AND "
+                "kind='binding' AND "
+                "json_extract(data,'$.document_id')=?",
+                (project, request.document_id),
+            )
+        ]
+        return target, stages, protected, bindings
+
+    def accepted_claims(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        stages: set[str],
+        document_id: str,
+        baseline: Baseline,
+    ) -> set[str]:
+        store = self.service.store
         protected: set[str] = set()
         floor = store.project(db, project).history_floor
         for key in stages:
@@ -184,7 +211,7 @@ class Reconciliation:
                 db,
                 project,
                 row,
-                {request.document_id: baseline.context_id},
+                {document_id: baseline.context_id},
                 set(),
                 evaluate_milestone=False,
             )
@@ -200,7 +227,8 @@ class Reconciliation:
                     "SELECT data FROM document_mutations WHERE project_id=?",
                     (project,),
                 )
-                if (entry := json.loads(saved[0])).get("kind") == "reconciliation"
+                if (entry := json.loads(saved[0])).get("kind")
+                in {"reconciliation", "restore"}
                 and (result := entry["result"])["state"] == "completed"
                 and key in result["restored_milestones"]
             }
@@ -234,7 +262,7 @@ class Reconciliation:
                     "SELECT * FROM records WHERE project_id=? AND id=?", (project, item)
                 ).fetchone()
                 record = store._record(db, project, item)
-                if isinstance(record, Document) and record.id != request.document_id:
+                if isinstance(record, Document) and record.id != document_id:
                     raise ProjectError(
                         "reconciliation_scope",
                         "This recovery proof covers one document",
@@ -269,20 +297,7 @@ class Reconciliation:
                         record_id=item,
                     )
             protected.update(closure)
-        if protected.intersection(target.entity_ids):
-            raise ProjectError(
-                "reconciliation_ownership", "Working ownership overlaps accepted claims"
-            )
-        bindings = [
-            Binding.model_validate_json(r[0])
-            for r in db.execute(
-                "SELECT data FROM records WHERE project_id=? AND "
-                "kind='binding' AND "
-                "json_extract(data,'$.document_id')=?",
-                (project, request.document_id),
-            )
-        ]
-        return target, stages, protected, bindings
+        return protected
 
     @staticmethod
     def _resources(evidence: DocumentAttestation) -> dict[tuple[str, str], Any]:
