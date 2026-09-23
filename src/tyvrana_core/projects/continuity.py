@@ -13,6 +13,7 @@ from tyvrana_protocol import (
     DocumentAttestationResponse,
 )
 
+from ..errors import AdapterDisconnected, AdapterNotFound
 from .attestation_migration import FormatMigration, claim_revisions
 from .models import Binding, BindingObservation, Document, Key, Model, ProjectInput
 from .store import ProjectError
@@ -517,13 +518,7 @@ class Continuity:
             raise ProjectError(
                 "migration_resource_mismatch", "Resource evidence differs"
             )
-        confirmed = await self.observe(adapter)
-        if confirmed.model_dump(exclude={"elapsed_ms"}) != live.model_dump(
-            exclude={"elapsed_ms"}
-        ):
-            raise ProjectError(
-                "application_changed", "Live content changed during migration proof"
-            )
+        adapter = await self._reconfirm_migration_source(adapter, live)
         assert live.digest is not None
         with store.transaction(write=True) as db:
             store.expect(store.project(db, project), request.expected_revision)
@@ -538,10 +533,6 @@ class Continuity:
                 or store._record(db, project, document.id) != document
                 or self.service.core.registry.get(adapter.instance_id).connection_id
                 != adapter.connection_id
-                or self.service.core.registry.get(
-                    proof_adapter.instance_id
-                ).connection_id
-                != proof_adapter.connection_id
             ):
                 raise ProjectError(
                     "migration_conflict", "Document or baseline changed before commit"
@@ -647,3 +638,50 @@ class Continuity:
             baseline_migrated=not repeated,
             already_migrated=repeated,
         )
+
+    async def _reconfirm_migration_source(
+        self, original: "AdapterInfo", live: DocumentAttestation
+    ) -> "AdapterInfo":
+        """Reconfirm the pinned live document, never the latest proof connection."""
+        registry = self.service.core.registry
+        try:
+            candidates = [registry.get(original.instance_id)]
+        except (AdapterDisconnected, AdapterNotFound):
+            # Instance IDs route requests; the attested host/loaded-document pair
+            # identifies the source across a transport or adapter reconnection.
+            candidates = [
+                candidate
+                for candidate in registry.list()
+                if candidate.registration.application
+                == original.registration.application
+                and candidate.registration.project_id == live.project_id
+            ]
+        matches = []
+        for candidate in candidates:
+            confirmed = await self.observe(candidate)
+            if (
+                confirmed.host_session_id == live.host_session_id
+                and confirmed.document_session_id == live.document_session_id
+                and confirmed.project_id == live.project_id
+            ):
+                matches.append((candidate, confirmed))
+        if len(matches) != 1:
+            raise ProjectError(
+                "application_changed",
+                "Pinned live host/document is missing or ambiguous "
+                "during migration proof",
+            )
+        adapter, confirmed = matches[0]
+        # Work is performance/progress telemetry, including nested elapsed times
+        # and cost-based ordering. It is not document content or lineage. Complete
+        # status, omissions, file identity and all authored evidence remain guarded.
+        before = live.model_dump(exclude={"elapsed_ms", "work"})
+        after = confirmed.model_dump(exclude={"elapsed_ms", "work"})
+        changed = [key for key in before if before[key] != after[key]]
+        if changed:
+            raise ProjectError(
+                "application_changed",
+                "Live content changed during migration proof",
+                changed_fields=changed,
+            )
+        return adapter
