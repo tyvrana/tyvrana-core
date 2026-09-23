@@ -573,6 +573,30 @@ another instance. `core` is reserved for semantic project operations. Reconnecti
 or extension reload requires rediscovery and deliberate target selection; verify
 stale semantic resource bindings before continuing.
 
+## Migrating an attestation format
+
+`project.attest(mode="migrate")` upgrades the existing trusted baseline after a
+canonical attestation-format correction. Supply distinct `from_format` and
+`to_format`, the expected project revision, `trusted_artifact_sha256`, provenance,
+and separate live and proof adapter IDs. The proof host must have independently
+loaded the same trusted artifact. Both complete attestations must use the requested
+new format, agree on content and resource evidence, and report the file SHA256
+already recorded in the baseline. Missing durable file identity, wrong document
+lineage, changed files, incomplete evidence and digest disagreement fail closed.
+There is no force flag, old hashing implementation, or implicit baseline adoption.
+
+Only the existing baseline metadata changes. Its migration proof derives current
+freshness for historically accepted claims whose retained semantic dependency
+closure and binding evidence remain unchanged. Normal prerequisite, validation,
+resource and issue gates still apply; unproved claims remain stale. The proof is
+invalidated by subsequent changes to those claims, observations or resource
+fingerprints. Stored semantic records, historical acceptance, checkpoints and the
+project revision are untouched. No milestone reacceptance is required.
+
+Repeating the same transition rechecks the proof and makes no metadata or revision
+change. A missing baseline belongs to the existing bootstrap workflow. Migration
+does not edit or reload an application document.
+
 ## Restoring a trusted artifact
 
 `project.restore` explicitly discards an observed divergent working document in

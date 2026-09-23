@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from .attestation_migration import verified_projection
 from .gates import MilestoneGates
 from .models import (
     RECORD,
@@ -1346,6 +1347,17 @@ class ProjectStore:
         evaluate_milestone: bool = True,
     ) -> RecordView:
         record = RECORD.validate_json(row["data"])
+        migrated, migrated_binding = (
+            verified_projection(db, project_id, connections, record.id)
+            if isinstance(record, (Milestone, Validation, Binding))
+            else (False, None)
+        )
+        if (
+            migrated
+            and isinstance(record, Milestone)
+            and record.status == "invalidated"
+        ):
+            record = record.model_copy(update={"status": "accepted"})
         binding = None
         freshness = None
         availability: Literal["available", "expired", "unverified"] | None = None
@@ -1367,21 +1379,27 @@ class ProjectStore:
                 if observed
                 else BindingObservation(state="unverified")
             )
+            if migrated_binding is not None:
+                binding = migrated_binding
             if (
                 binding.connection_id != connections.get(record.document_id)
                 or not binding.connection_id
             ):
                 binding = binding.model_copy(update={"state": "unverified"})
         if isinstance(record, Validation):
-            freshness = record.freshness
+            freshness = "current" if migrated else record.freshness
             context_row = db.execute(
                 "SELECT data FROM validation_context WHERE project_id=? AND id=?",
                 (project_id, record.id),
             ).fetchone()
             context = json.loads(context_row[0]) if context_row else {}
-            if freshness == "current" and any(
-                not session or connections.get(key) != session
-                for key, session in context.items()
+            if (
+                not migrated
+                and freshness == "current"
+                and any(
+                    not session or connections.get(key) != session
+                    for key, session in context.items()
+                )
             ):
                 freshness = "unverified"
             record = record.model_copy(update={"freshness": freshness})

@@ -6,14 +6,15 @@ import time
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from tyvrana_protocol import (
     DocumentAttestation,
     DocumentAttestationJob,
     DocumentAttestationResponse,
 )
 
-from .models import Document, Key, Model, ProjectInput
+from .attestation_migration import FormatMigration, claim_revisions
+from .models import Binding, BindingObservation, Document, Key, Model, ProjectInput
 from .store import ProjectError
 
 if TYPE_CHECKING:
@@ -25,10 +26,31 @@ class AttestInput(ProjectInput):
     document_id: Key
     adapter_id: Key
     expected_revision: int = Field(ge=0)
-    mode: Literal["capture", "reattach", "bootstrap"] = "capture"
+    mode: Literal["capture", "reattach", "bootstrap", "migrate"] = "capture"
     proof_adapter_id: Key | None = None
     trusted_artifact_sha256: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
     provenance: str = Field(default="", max_length=2048)
+    from_format: str | None = Field(default=None, min_length=1, max_length=256)
+    to_format: str | None = Field(default=None, min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def migration_intent(self) -> "AttestInput":
+        if self.mode == "migrate":
+            if (
+                not self.from_format
+                or not self.to_format
+                or self.from_format == self.to_format
+                or not self.proof_adapter_id
+                or not self.trusted_artifact_sha256
+                or not self.provenance.strip()
+            ):
+                raise ValueError(
+                    "Migration requires explicit distinct from_format/to_format, "
+                    "independent proof adapter, trusted artifact SHA256 and provenance"
+                )
+        elif self.from_format is not None or self.to_format is not None:
+            raise ValueError("Format migration intent requires mode='migrate'")
+        return self
 
 
 class AttestResult(Model):
@@ -40,6 +62,8 @@ class AttestResult(Model):
     document_session_id: str
     adapter_id: str
     semantic_revision_changed: bool = False
+    baseline_migrated: bool = False
+    already_migrated: bool = False
 
 
 class Baseline(Model):
@@ -53,6 +77,7 @@ class Baseline(Model):
     artifact_sha256: str | None = None
     resources: list[dict[str, object]] = Field(default_factory=list)
     resource_scope: str | None = None
+    format_migration: FormatMigration | None = None
 
 
 class Continuity:
@@ -204,8 +229,13 @@ class Continuity:
             raise ProjectError(
                 "document_mismatch", "Adapter does not represent the bound document"
             )
-        evidence = await self.observe(adapter)
         baseline = self.baseline(project, document.id)
+        if request.mode == "migrate":
+            async with self.service.mutations.lock:
+                return await self._migrate(
+                    project, request, document, adapter, baseline
+                )
+        evidence = await self.observe(adapter)
         if request.mode == "capture":
             if baseline and (
                 evidence.host_session_id != baseline.host_session_id
@@ -342,6 +372,11 @@ class Continuity:
             artifact_sha256=request.trusted_artifact_sha256
             if request.mode == "bootstrap"
             else (baseline.artifact_sha256 if baseline else evidence.file_sha256),
+            format_migration=baseline.format_migration
+            if baseline
+            and baseline.digest == evidence.digest
+            and baseline.format == evidence.format
+            else None,
         )
         with store.transaction(write=True) as db:
             store.expect(store.project(db, project), request.expected_revision)
@@ -402,4 +437,213 @@ class Continuity:
             host_session_id=result.host_session_id,
             document_session_id=result.document_session_id,
             adapter_id=adapter.instance_id,
+        )
+
+    async def _migrate(
+        self,
+        project: str,
+        request: AttestInput,
+        document: Document,
+        adapter: "AdapterInfo",
+        baseline: Baseline | None,
+    ) -> AttestResult:
+        store = self.service.store
+        if baseline is None:
+            raise ProjectError(
+                "migration_baseline_missing",
+                "Migration requires a baseline; use bootstrap",
+            )
+        if baseline.application_project_id != document.application_project_id:
+            raise ProjectError(
+                "migration_lineage", "Baseline belongs to another document"
+            )
+        if not baseline.artifact_sha256:
+            raise ProjectError(
+                "migration_artifact_missing",
+                "Baseline lacks durable trusted file SHA256",
+            )
+        if request.trusted_artifact_sha256 != baseline.artifact_sha256:
+            raise ProjectError(
+                "migration_file_mismatch", "Trusted artifact SHA256 differs"
+            )
+        repeated = baseline.format == request.to_format
+        if (not repeated and baseline.format != request.from_format) or (
+            repeated
+            and (
+                baseline.format_migration is None
+                or baseline.format_migration.from_format != request.from_format
+                or baseline.format_migration.to_format != request.to_format
+            )
+        ):
+            raise ProjectError(
+                "migration_format", "Explicit format transition does not match"
+            )
+        with store.transaction() as db:
+            store.expect(store.project(db, project), request.expected_revision)
+        live = await self.observe(adapter)
+        assert request.proof_adapter_id is not None
+        proof_adapter = self.service.core.registry.get(request.proof_adapter_id)
+        proof = await self.observe(proof_adapter)
+        if (
+            proof_adapter.registration.application != document.application
+            or proof.project_id != document.application_project_id
+            or live.project_id != document.application_project_id
+            or proof.host_session_id == live.host_session_id
+        ):
+            raise ProjectError(
+                "migration_lineage", "Independent document lineage required"
+            )
+        if (
+            live.file_sha256 != baseline.artifact_sha256
+            or proof.file_sha256 != baseline.artifact_sha256
+        ):
+            raise ProjectError(
+                "migration_file_mismatch", "Current file differs from trusted artifact"
+            )
+        if (
+            live.format != request.to_format
+            or proof.format != request.to_format
+            or live.digest != proof.digest
+            or (repeated and live.digest != baseline.digest)
+        ):
+            raise ProjectError(
+                "migration_digest_mismatch", "New-format content does not match"
+            )
+        resources = self.service.reconciliation._resources(live)
+        if (
+            live.resource_scope != proof.resource_scope
+            or resources != self.service.reconciliation._resources(proof)
+        ):
+            raise ProjectError(
+                "migration_resource_mismatch", "Resource evidence differs"
+            )
+        confirmed = await self.observe(adapter)
+        if confirmed.model_dump(exclude={"elapsed_ms"}) != live.model_dump(
+            exclude={"elapsed_ms"}
+        ):
+            raise ProjectError(
+                "application_changed", "Live content changed during migration proof"
+            )
+        assert live.digest is not None
+        with store.transaction(write=True) as db:
+            store.expect(store.project(db, project), request.expected_revision)
+            saved = db.execute(
+                "SELECT data FROM document_attestations WHERE "
+                "project_id=? AND document_id=?",
+                (project, document.id),
+            ).fetchone()
+            if (
+                saved is None
+                or Baseline.model_validate_json(saved[0]) != baseline
+                or store._record(db, project, document.id) != document
+                or self.service.core.registry.get(adapter.instance_id).connection_id
+                != adapter.connection_id
+                or self.service.core.registry.get(
+                    proof_adapter.instance_id
+                ).connection_id
+                != proof_adapter.connection_id
+            ):
+                raise ProjectError(
+                    "migration_conflict", "Document or baseline changed before commit"
+                )
+            if repeated:
+                result = baseline
+            else:
+                assert request.from_format is not None and request.to_format is not None
+                migration = FormatMigration(
+                    from_format=request.from_format,
+                    to_format=request.to_format,
+                    previous_digest=baseline.digest,
+                    proof_host_session_id=proof.host_session_id,
+                    proof_document_session_id=proof.document_session_id,
+                    resource_scope=live.resource_scope or "",
+                )
+                for row in db.execute(
+                    "SELECT * FROM records WHERE project_id=? AND kind='milestone'",
+                    (project,),
+                ).fetchall():
+                    view = store._view(
+                        db, project, row, {}, set(), evaluate_milestone=False
+                    )
+                    if view.historical_status != "accepted":
+                        continue
+                    try:
+                        protected = self.service.reconciliation.accepted_claims(
+                            db, project, {row["id"]}, document.id, baseline
+                        )
+                        observations: dict[str, BindingObservation] = {}
+                        fingerprints: dict[str, str] = {}
+                        for key in protected:
+                            record = store._record(db, project, key)
+                            if not isinstance(record, Binding):
+                                continue
+                            resource = resources.get(
+                                (record.resource_kind, record.resource_id)
+                            )
+                            observed = db.execute(
+                                "SELECT data FROM observations WHERE "
+                                "project_id=? AND id=?",
+                                (project, key),
+                            ).fetchone()
+                            if (
+                                resource is None
+                                or resource.state != "present"
+                                or not resource.fingerprint
+                                or observed is None
+                            ):
+                                raise ProjectError(
+                                    "migration_claim_unverified",
+                                    "Binding lacks evidence",
+                                )
+                            observation = BindingObservation.model_validate_json(
+                                observed[0]
+                            )
+                            if (
+                                observation.state != "verified"
+                                or not observation.fingerprint
+                            ):
+                                raise ProjectError(
+                                    "migration_claim_unverified",
+                                    "Prior binding lacks evidence",
+                                )
+                            observations[key] = observation
+                            fingerprints[key] = resource.fingerprint
+                    except ProjectError as exc:
+                        if not exc.code.startswith(
+                            ("reconciliation_", "migration_claim_")
+                        ):
+                            raise
+                        continue  # Migrate the format, but leave unproved claims stale.
+                    migration.claims[row["id"]] = claim_revisions(
+                        db, project, row["id"]
+                    )
+                    migration.observations.update(observations)
+                    migration.resource_fingerprints.update(fingerprints)
+                result = baseline.model_copy(
+                    update=dict(
+                        format=live.format,
+                        digest=live.digest,
+                        host_session_id=live.host_session_id,
+                        document_session_id=live.document_session_id,
+                        provenance=request.provenance,
+                        resources=[r.model_dump(mode="json") for r in live.resources],
+                        resource_scope=live.resource_scope,
+                        format_migration=migration,
+                    )
+                )
+                db.execute(
+                    "UPDATE document_attestations SET data=? WHERE "
+                    "project_id=? AND document_id=?",
+                    (result.model_dump_json(), project, document.id),
+                )
+        return AttestResult(
+            document_id=document.id,
+            revision=request.expected_revision,
+            digest=result.digest,
+            context_id=result.context_id,
+            host_session_id=result.host_session_id,
+            document_session_id=result.document_session_id,
+            adapter_id=adapter.instance_id,
+            baseline_migrated=not repeated,
+            already_migrated=repeated,
         )

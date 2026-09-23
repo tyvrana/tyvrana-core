@@ -97,8 +97,11 @@ DECLARATIONS: dict[
             "exact accepted content. Capture requires current binding; "
             "reattach requires matching durable digest; bootstrap "
             "requires an independently loaded trusted artifact SHA256 and"
-            " provenance. Never marks milestones accepted. No semantic "
-            "revision churn for attachment metadata."
+            " provenance. Migrate requires explicit from_format/to_format, "
+            "the existing baseline's durable file SHA256 and an independent "
+            "matching new-format proof. It replaces only baseline metadata, "
+            "derives freshness for unchanged historically accepted claims, "
+            "and preserves acceptance history. No semantic revision churn."
         ),
     ),
     "project.create": (
