@@ -14,8 +14,8 @@ Adapters may advertise exactly one read-only, artifact-free operation tagged
   document UUID, complete content digest and format. It does not inherit an old live
   session. A still-connected valid attachment to another host prevents takeover.
 - `bootstrap`: for a binding predating strong evidence, require a supplied trusted
-  historical artifact SHA256/provenance, a second independent host loaded from that
-  artifact, matching document UUIDs, matching complete material digests and a final
+  historical artifact locator/SHA256/provenance. Core creates an independent host
+  from that artifact and requires matching document UUIDs, matching complete material digests and a final
   unchanged live observation. A provided checksum is only trustworthy if the caller
   has established its provenance from accepted immutable evidence.
 
@@ -46,9 +46,9 @@ for whole-document attestation. Baseline provenance does not make Core a visual 
 Document observations may use the shared typed attestation job envelope. Core
 discovers the read-only status contract by semantic tag, observes with bounded
 backoff, validates final evidence and then applies the existing identity/content
-policy. The global dispatcher timeout is unchanged. An observation pending after
-20 seconds returns its job ID and status operation; no incomplete evidence is
-accepted as a strong baseline.
+policy. The global dispatcher timeout is unchanged. Proof-heavy project calls
+return a retained operation job after 20 seconds, observed with the corresponding
+project status operation. Incomplete evidence is never accepted as a strong baseline.
 
 ## Accepted checkpoints and current working content
 
@@ -99,15 +99,13 @@ working stage, provenance, and a unique reconciliation ID. The explicit delta is
 at most 16 advertised typed operations (128 KiB total request); each step declares
 its owning entity in that stage. Raw geometry is not needed.
 
-The caller must supply a disposable independent adapter loaded with the exact
-trusted prior document. Core requires the same logical document and strong
-attestation format, but a different host. Preparing that proof document is an
-explicit lifecycle prerequisite; Core does not launch application processes.
-Only synchronous, artifact-free operations carrying the adapter's
-`recovery_replay` qualification may be replayed. Core uses existing guarded native
-mutation receipts on this proof adapter. The live document is observed read-only.
-A failed attempt can leave the disposable proof document changed; reset it to the
-trusted prior content before a new attempt.
+Core leases a disposable proof host from the selected work adapter. The adapter opens
+the durable prior artifact locator and verifies its SHA256 before registration.
+Core requires the same logical document, format and implementation build, a different
+background process, and the exact issued lease. Only synchronous, artifact-free
+operations tagged `recovery_replay` may run through guarded mutation receipts there.
+The live document is read-only. Core releases the proof process after every outcome;
+clients never prepare, select, reset or terminate proof applications.
 
 Core requires the complete replayed content digest and scoped resource observations
 to equal the fresh live result exactly. Extra objects, unexplained material edits,

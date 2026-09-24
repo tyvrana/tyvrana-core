@@ -543,6 +543,8 @@ def _operations(
         catalog_hash = CATALOG_SHA256
     else:
         info = core.registry.get(request.adapter_id)
+        if info.registration.runtime and info.registration.runtime.role == "proof":
+            raise AdapterNotFound(request.adapter_id)
         available = {item.name: item for item in info.registration.operations}
         catalog_hash = info.catalog_sha256
     missing = sorted(set(request.names or []) - available.keys())

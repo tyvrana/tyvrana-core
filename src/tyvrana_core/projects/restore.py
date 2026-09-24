@@ -30,6 +30,7 @@ from .restore_models import RestoreInput, RestoreResult
 from .store import ProjectError, now
 
 if TYPE_CHECKING:
+    from ..registry import AdapterInfo
     from .service import ProjectService
 
 logger = logging.getLogger(__name__)
@@ -288,6 +289,24 @@ class TrustedRestore:
     async def _restore(
         self, project: str, request: RestoreInput, data: dict[str, Any]
     ) -> None:
+        with self.service.store.transaction() as db:
+            target, _, _ = self._target(db, project, request)
+        parent = self.service.core.registry.get(request.adapter_id)
+        artifact = self.service.proofs.artifact(
+            locator=target.artifact_locator,
+            sha256=target.artifact_sha256,
+            project_id=target.application_project_id,
+        )
+        async with self.service.proofs.acquire(parent, artifact) as proof:
+            await self._restore_proven(project, request, data, proof)
+
+    async def _restore_proven(
+        self,
+        project: str,
+        request: RestoreInput,
+        data: dict[str, Any],
+        proof_host: "AdapterInfo",
+    ) -> None:
         service, store = self.service, self.service.store
         with store.transaction() as db:
             state = store.project(db, project)
@@ -297,7 +316,6 @@ class TrustedRestore:
             document = store._record(db, project, request.document_id)
         assert isinstance(document, Document)
         live = service.core.registry.get(request.adapter_id)
-        proof_host = service.core.registry.get(request.proof_adapter_id)
         if live.instance_id == proof_host.instance_id or any(
             a.registration.application != document.application
             for a in (live, proof_host)
@@ -334,6 +352,7 @@ class TrustedRestore:
                 "Independent content differs from the trusted target",
             )
         assert target.artifact_sha256 is not None
+        assert target.artifact_locator is not None
         resources = service.reconciliation._resources(proof)
         for value in records.values():
             if value["kind"] == "binding":
@@ -380,7 +399,7 @@ class TrustedRestore:
             args = DocumentRestoreRequest(
                 mutation_id=request.restore_id,
                 operation=operation("document_open"),
-                arguments=request.open_arguments,
+                locator=target.artifact_locator,
                 discard_current=True,
                 current=request.expected_current,
                 target=DocumentRestoreTarget(

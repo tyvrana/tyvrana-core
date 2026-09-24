@@ -20,6 +20,7 @@ from .reconcile_models import ReconcileInput, ReconcileResult
 from .store import ProjectError, now
 
 if TYPE_CHECKING:
+    from ..registry import AdapterInfo
     from .service import ProjectService
 
 logger = logging.getLogger(__name__)
@@ -360,6 +361,28 @@ class Reconciliation:
     async def _prove(
         self, project: str, request: ReconcileInput, data: dict[str, Any]
     ) -> None:
+        baseline = self.service.continuity.baseline(project, request.document_id)
+        if baseline is None or baseline.digest != request.prior_digest:
+            raise ProjectError(
+                "reconciliation_prior_head",
+                "Declared prior head must match the durable trusted head",
+            )
+        parent = self.service.core.registry.get(request.adapter_id)
+        artifact = self.service.proofs.artifact(
+            locator=baseline.artifact_locator,
+            sha256=baseline.artifact_sha256,
+            project_id=baseline.application_project_id,
+        )
+        async with self.service.proofs.acquire(parent, artifact) as proof:
+            await self._prove_leased(project, request, data, proof)
+
+    async def _prove_leased(
+        self,
+        project: str,
+        request: ReconcileInput,
+        data: dict[str, Any],
+        proof: "AdapterInfo",
+    ) -> None:
         service, store = self.service, self.service.store
         baseline = service.continuity.baseline(project, request.document_id)
         if baseline is None or baseline.digest != request.prior_digest:
@@ -367,10 +390,7 @@ class Reconciliation:
                 "reconciliation_prior_head",
                 "Declared prior head must match the durable trusted head",
             )
-        live, proof = (
-            service.core.registry.get(a)
-            for a in (request.adapter_id, request.proof_adapter_id)
-        )
+        live = service.core.registry.get(request.adapter_id)
         with store.transaction() as db:
             store.expect(store.project(db, project), request.expected_revision)
             document = store._record(db, project, request.document_id)
@@ -415,6 +435,7 @@ class Reconciliation:
         self._same_document(previous, baseline, live=False)
         if (
             previous.host_session_id == current.host_session_id
+            or previous.file_sha256 != baseline.artifact_sha256
             or previous.digest != baseline.digest
         ):
             raise ProjectError(

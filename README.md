@@ -578,8 +578,8 @@ stale semantic resource bindings before continuing.
 `project.attest(mode="migrate")` upgrades the existing trusted baseline after a
 canonical attestation-format correction. Supply distinct `from_format` and
 `to_format`, the expected project revision, `trusted_artifact_sha256`, provenance,
-and separate live and proof adapter IDs. The proof host must have independently
-loaded the same trusted artifact. Both complete attestations must use the requested
+and the intended work adapter ID. Core leases an application-owned background
+proof host and opens the trusted artifact automatically. Both complete attestations must use the requested
 new format, agree on content and resource evidence, and report the file SHA256
 already recorded in the baseline. Missing durable file identity, wrong document
 lineage, changed files, incomplete evidence and digest disagreement fail closed.
@@ -603,14 +603,15 @@ does not edit or reload an application document.
 favor of a durable saved baseline or named checkpoint. It requires
 `discard_current: true`, the expected project revision, and `expected_current`
 with the live host/document sessions, logical project identity, attestation format
-and strong digest. A separate `proof_adapter_id` must already have loaded the
-target artifact. Core requires its file SHA256, strong digest and document lineage
+and strong digest. Core automatically creates an independent proof host for the
+durable target locator. It requires its file SHA256, strong digest and document lineage
 to match durable evidence before dispatching the adapter's guarded typed open.
 The native adapter rechecks the current state and target file bytes immediately
 before loading. Normal mutations retain their existing divergence guard.
 
 Supply `checkpoint_id` for a saved working checkpoint; omit it for the durable
-trusted baseline. `open_arguments` follows the advertised document-open schema.
+trusted baseline. Core selects the durable artifact locator; the adapter owns
+the application-specific guarded open.
 Checkpoints capture immutable content and semantic freshness evidence; a target
 without saved artifact identity, or with changed semantic claims, is rejected.
 The current scope is a single bound document, without semantic graph rebasing.
@@ -628,3 +629,25 @@ An actual content/freshness restore advances the project revision once. An
 already-current target or exact runtime reattachment does not advance it unless
 semantic freshness must change. Fresh application processes are supported;
 previous process, adapter and runtime session identifiers are not required.
+
+## Managed independent proof hosts
+
+Bootstrap, format migration, restore and reconciliation select only the work adapter.
+Core issues an unguessable lease, verifies the registered application/build/document
+identity, and releases the proof process after success, failure, cancellation or timeout.
+Adapters implement typed `proof_host_start`, `proof_host_status` and `proof_host_stop`
+contracts. They own process launch, artifact opening, bounded termination and orphan
+protection; Core contains no application command lines. Managed proof adapters are
+excluded from normal discovery and cannot receive client operations or implicit routes.
+
+Saved baselines and checkpoints retain artifact locators alongside authoritative SHA256
+and content evidence. A bootstrap from a separate historical artifact uses explicit
+`trusted_artifact_locator`. Locators are reopening hints, never document identity.
+Unavailable artifacts or capabilities fail closed. No client-created proof application
+is required or supported.
+
+Proof workflows return a completed result or retained project job after 20 seconds.
+Observe `project.attest_status`, `project.restore_status` or `project.reconcile_status`;
+the corresponding `_cancel` operation waits for cleanup. Proof jobs are bounded to
+ten minutes, with one proof per work host and four simultaneous leases. Core shutdown cancels retained work; a restarted Core reports interrupted
+work rather than adopting its result. A later workflow creates a new proof process.

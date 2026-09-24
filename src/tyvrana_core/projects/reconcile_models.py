@@ -19,7 +19,6 @@ class ReconcileInput(ProjectInput):
     expected_revision: int = Field(ge=1)
     document_id: Key
     adapter_id: Key
-    proof_adapter_id: Key
     stage_id: Key
     prior_digest: Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
     expected_digest: Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
@@ -28,8 +27,6 @@ class ReconcileInput(ProjectInput):
 
     @model_validator(mode="after")
     def independent(self) -> "ReconcileInput":
-        if self.adapter_id == self.proof_adapter_id:
-            raise ValueError("Proof adapter must be independent of the live document")
         if self.prior_digest == self.expected_digest:
             raise ValueError("Recovery requires a declared content transition")
         return self

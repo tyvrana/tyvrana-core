@@ -17,6 +17,7 @@ from tyvrana_protocol import (
     OperationContract,
     OperationRequest,
     OperationSuccess,
+    ProofHostStart,
 )
 from tyvrana_protocol.mutations import DocumentMutationJob, DocumentMutationRequest
 from websockets.asyncio.client import connect
@@ -25,6 +26,7 @@ from tyvrana_core import AdapterServer, CoreConfig
 from tyvrana_core.projects.store import ProjectError
 
 from .helpers import FakeAdapter
+from .proof_fixture import ManagedProofFixture
 from .test_continuity import establish, evidence
 
 
@@ -33,6 +35,10 @@ async def editor(
     core: AdapterServer,
     instance: str = "initial",
     restores: list[dict[str, Any]] | None = None,
+    *,
+    value_override: dict[str, Any] | None = None,
+    lease: ProofHostStart | None = None,
+    faults: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     value = evidence(host="host" if instance == "initial" else "proof-host")
     value.update(
@@ -47,7 +53,16 @@ async def editor(
             ),
         ],
     )
-    async with connect(core.uri, proxy=None) as socket:
+    if value_override is not None:
+        value = value_override
+    lifecycle = ManagedProofFixture(
+        core,
+        value,
+        lambda key, saved, intent: editor(
+            core, key, value_override=saved, lease=intent
+        ),
+    )
+    async with lifecycle.stack, connect(core.uri, proxy=None) as socket:
         fake = FakeAdapter(socket)
         contracts = [
             OperationContract(
@@ -121,7 +136,9 @@ async def editor(
                     instance_id=instance,
                     application="editor",
                     project_id="saved",
-                    operations=tuple(contracts),
+                    operations=(*contracts, *lifecycle.contracts()),
+                    runtime=lifecycle.runtime(lease),
+                    project_path="/fixture.blend",
                 )
             )
             await fake.send(
@@ -133,15 +150,16 @@ async def editor(
             while True:
                 request = await fake.receive()
                 assert isinstance(request, OperationRequest)
-                if request.operation == "editor.document.attest":
+                if request.operation.startswith("editor.proof."):
+                    result = await lifecycle.respond(request)
+                elif request.operation == "editor.document.attest":
                     result = copy.deepcopy(value)
                 elif request.operation == "editor.document.restore":
                     restore = DocumentRestoreRequest.model_validate(request.arguments)
                     if restores is not None:
                         restores.append(restore.model_dump(mode="json"))
                     before = copy.deepcopy(value)
-                    assert isinstance(restore.arguments, dict)
-                    if restore.arguments.get("load_failure"):
+                    if (faults or {}).get("load_failure"):
                         result = dict(
                             job_id=restore.mutation_id,
                             state="failed",
@@ -154,7 +172,7 @@ async def editor(
                             restore.target.model_dump(), document_session_id="restored"
                         )
                         value["resources"][0]["fingerprint"] = "base-original"
-                        if restore.arguments.get("post_mismatch"):
+                        if (faults or {}).get("post_mismatch"):
                             value["digest"] = "f" * 64
                         result = dict(
                             job_id=restore.mutation_id,

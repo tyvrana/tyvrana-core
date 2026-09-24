@@ -1,5 +1,6 @@
 "Bind core semantics to portable advertised application identity inspection."
 
+import asyncio
 import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -15,7 +16,7 @@ from tyvrana_protocol import (
 )
 
 from .catalog import DECLARATIONS
-from .continuity import AttestInput, Continuity
+from .continuity import AttestInput, AttestStatusInput, Continuity
 from .models import (
     ApplicationStatus,
     ApplyInput,
@@ -32,6 +33,7 @@ from .models import (
     VerifyInput,
 )
 from .mutations import WorkingMutations
+from .proofs import ProofHosts
 from .reconcile import Reconciliation
 from .reconcile_models import ReconcileInput, ReconcileStatusInput
 from .restore import TrustedRestore
@@ -46,6 +48,7 @@ class ProjectService:
     def __init__(self, core: "AdapterServer", path: Path) -> None:
         self.core = core
         self.store = ProjectStore(path)
+        self.proofs = ProofHosts(self)
         self.continuity = Continuity(self)
         self.attachments: dict[tuple[str, str], str] = {}
         self.mutations = WorkingMutations(self)
@@ -163,6 +166,7 @@ class ProjectService:
                     VerifyInput,
                     RemoveInput,
                     AttestInput,
+                    AttestStatusInput,
                     RestoreInput,
                     RestoreStatusInput,
                     ReconcileInput,
@@ -174,6 +178,23 @@ class ProjectService:
                 for a in self.core.registry.list()
             }
             project_id = self.store.select(request.project_id, connected)
+            if operation.endswith("_cancel"):
+                owner: Continuity | TrustedRestore | Reconciliation
+                if isinstance(request, AttestStatusInput):
+                    owner, key = self.continuity, request.attestation_id
+                elif isinstance(request, RestoreStatusInput):
+                    owner, key = self.restores, request.restore_id
+                else:
+                    assert isinstance(request, ReconcileStatusInput)
+                    owner, key = self.reconciliation, request.reconciliation_id
+                owner.status(project_id, key)
+                task = owner.tasks.get(key)
+                if task:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                return owner.status(project_id, key)
+            if isinstance(request, AttestStatusInput):
+                return self.continuity.status(project_id, request.attestation_id)
             if isinstance(request, RestoreInput):
                 return await self.restores.start(project_id, request)
             if isinstance(request, RestoreStatusInput):
@@ -183,7 +204,7 @@ class ProjectService:
             if isinstance(request, ReconcileStatusInput):
                 return self.reconciliation.status(project_id, request.reconciliation_id)
             if isinstance(request, AttestInput):
-                return await self.continuity.attest(project_id, request)
+                return await self.continuity.start(project_id, request)
             connections, applications = await self.environment(project_id)
             if isinstance(request, RemoveInput):
                 self.store.remove(

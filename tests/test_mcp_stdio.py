@@ -54,6 +54,7 @@ def environment() -> dict[str, str]:
     return {
         "UV_CACHE_DIR": str(ROOT / ".uv-cache"),
         "UV_PYTHON_DOWNLOADS": "never",
+        "UV_NO_SYNC": os.environ.get("UV_NO_SYNC", "false"),
         "PYTHONASYNCIODEBUG": "1",
     }
 

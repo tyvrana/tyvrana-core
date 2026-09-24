@@ -60,6 +60,9 @@ class OperationDispatcher:
         if not math.isfinite(limit) or limit <= 0:
             raise ValueError("Operation timeout must be positive and finite")
         connection = self._registry._get_connection(adapter_id)
+        runtime = connection.registration.runtime
+        if not _internal and runtime is not None and runtime.role == "proof":
+            raise UnsupportedOperation(adapter_id, operation)
         if operation not in connection.registration.operation_names:
             raise UnsupportedOperation(adapter_id, operation)
         request = OperationRequest(
@@ -74,9 +77,13 @@ class OperationDispatcher:
         contract = next(
             c for c in connection.registration.operations if c.name == operation
         )
-        if {"document_mutation", "document_restore"}.intersection(
-            contract.tags
-        ) and not _internal:
+        if {
+            "document_mutation",
+            "document_restore",
+            "proof_host_start",
+            "proof_host_status",
+            "proof_host_stop",
+        }.intersection(contract.tags) and not _internal:
             raise UnsupportedOperation(adapter_id, operation)
         if contract.effect == "mutating" and not _internal and self._managed_mutation:
             managed = await self._managed_mutation(

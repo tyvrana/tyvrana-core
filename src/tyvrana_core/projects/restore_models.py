@@ -3,7 +3,7 @@
 from typing import Literal
 
 from pydantic import Field, field_validator
-from tyvrana_protocol import DocumentState, JsonValue
+from tyvrana_protocol import DocumentState
 
 from .models import Key, Model, ProjectInput
 
@@ -13,11 +13,9 @@ class RestoreInput(ProjectInput):
     expected_revision: int = Field(ge=1)
     document_id: Key
     adapter_id: Key
-    proof_adapter_id: Key
     checkpoint_id: Key | None = None
     discard_current: Literal[True]
     expected_current: DocumentState
-    open_arguments: JsonValue
     provenance: str = Field(min_length=1, max_length=2048, pattern=r"\S")
 
     @field_validator("discard_current", mode="before")

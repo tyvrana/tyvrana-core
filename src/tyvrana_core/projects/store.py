@@ -729,6 +729,7 @@ class ProjectStore:
                         "digest",
                         "context_id",
                         "artifact_sha256",
+                        "artifact_locator",
                         "application_project_id",
                     )
                     and isinstance(v, str)

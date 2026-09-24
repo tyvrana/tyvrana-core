@@ -3,7 +3,7 @@
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 from pydantic import Field, model_validator
@@ -16,6 +16,7 @@ from tyvrana_protocol import (
 from ..errors import AdapterDisconnected, AdapterNotFound
 from .attestation_migration import FormatMigration, claim_revisions
 from .models import Binding, BindingObservation, Document, Key, Model, ProjectInput
+from .proofs import PROOF_WORKFLOW
 from .store import ProjectError
 
 if TYPE_CHECKING:
@@ -28,7 +29,9 @@ class AttestInput(ProjectInput):
     adapter_id: Key
     expected_revision: int = Field(ge=0)
     mode: Literal["capture", "reattach", "bootstrap", "migrate"] = "capture"
-    proof_adapter_id: Key | None = None
+    trusted_artifact_locator: str | None = Field(
+        default=None, min_length=1, max_length=4096
+    )
     trusted_artifact_sha256: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
     provenance: str = Field(default="", max_length=2048)
     from_format: str | None = Field(default=None, min_length=1, max_length=256)
@@ -41,13 +44,12 @@ class AttestInput(ProjectInput):
                 not self.from_format
                 or not self.to_format
                 or self.from_format == self.to_format
-                or not self.proof_adapter_id
                 or not self.trusted_artifact_sha256
                 or not self.provenance.strip()
             ):
                 raise ValueError(
                     "Migration requires explicit distinct from_format/to_format, "
-                    "independent proof adapter, trusted artifact SHA256 and provenance"
+                    "trusted artifact SHA256 and provenance"
                 )
         elif self.from_format is not None or self.to_format is not None:
             raise ValueError("Format migration intent requires mode='migrate'")
@@ -67,6 +69,19 @@ class AttestResult(Model):
     already_migrated: bool = False
 
 
+class AttestStatusInput(ProjectInput):
+    attestation_id: Key
+
+
+class AttestJob(Model):
+    attestation_id: str
+    state: Literal["running", "completed", "failed"]
+    result: AttestResult | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    poll_after_seconds: float = 2.0
+
+
 class Baseline(Model):
     application_project_id: str
     format: str
@@ -76,14 +91,97 @@ class Baseline(Model):
     document_session_id: str
     provenance: str
     artifact_sha256: str | None = None
+    artifact_locator: str | None = None
     resources: list[dict[str, object]] = Field(default_factory=list)
     resource_scope: str | None = None
     format_migration: FormatMigration | None = None
 
 
 class Continuity:
+    caller_wait_seconds = 20.0
+
     def __init__(self, service: "ProjectService") -> None:
         self.service = service
+        self.tasks: dict[str, asyncio.Task[AttestResult]] = {}
+
+    async def shutdown(self) -> None:
+        tasks = list(self.tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def status(self, project: str, key: str) -> AttestJob:
+        with self.service.store.transaction() as db:
+            row = db.execute(
+                "SELECT data FROM document_mutations WHERE project_id=? AND id=?",
+                (project, key),
+            ).fetchone()
+        data = json.loads(row[0]) if row else None
+        if not data or data.get("kind") != "attest":
+            raise ProjectError("attestation_missing", "Unknown retained attestation")
+        result = AttestJob.model_validate(data["result"])
+        if result.state == "running" and key not in self.tasks:
+            return result.model_copy(
+                update=dict(
+                    state="failed",
+                    error_code="attestation_interrupted",
+                    error_message="Attestation interrupted; retry the operation",
+                )
+            )
+        return result
+
+    async def start(
+        self, project: str, request: AttestInput
+    ) -> AttestResult | AttestJob:
+        if request.mode not in {"bootstrap", "migrate"}:
+            return await self.attest(project, request)
+        key = uuid4().hex
+        data: dict[str, Any] = dict(
+            kind="attest",
+            result=AttestJob(attestation_id=key, state="running").model_dump(),
+        )
+        with self.service.store.transaction(write=True) as db:
+            db.execute(
+                "INSERT INTO document_mutations VALUES (?,?,?,?)",
+                (key, project, request.document_id, json.dumps(data)),
+            )
+
+        async def run() -> AttestResult:
+            try:
+                result = await self.attest(project, request)
+                data["result"] = AttestJob(
+                    attestation_id=key, state="completed", result=result
+                ).model_dump()
+                return result
+            except BaseException as exc:
+                data["result"] = AttestJob(
+                    attestation_id=key,
+                    state="failed",
+                    error_code=getattr(exc, "code", "attestation_interrupted"),
+                    error_message=str(exc)[:512] or "Attestation cancelled",
+                ).model_dump()
+                raise
+            finally:
+                with self.service.store.transaction(write=True) as db:
+                    db.execute(
+                        "UPDATE document_mutations SET data=? WHERE id=?",
+                        (json.dumps(data), key),
+                    )
+
+        task = asyncio.create_task(run())
+        self.tasks[key] = task
+
+        def finished(done: asyncio.Task[AttestResult]) -> None:
+            self.tasks.pop(key, None)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(finished)
+        try:
+            async with asyncio.timeout(self.caller_wait_seconds):
+                return await asyncio.shield(task)
+        except TimeoutError:
+            return self.status(project, key)
 
     def baseline(self, project: str, document: str) -> Baseline | None:
         with self.service.store.transaction() as db:
@@ -117,7 +215,10 @@ class Continuity:
                 "Adapter must advertise one read-only document_attestation contract",
             )
         response = await self.service.core.dispatcher.execute(
-            adapter_id=adapter.instance_id, operation=contracts[0].name, arguments={}
+            adapter_id=adapter.instance_id,
+            operation=contracts[0].name,
+            arguments={},
+            _internal=True,
         )
         observed = DocumentAttestationResponse.model_validate(response.result).root
         if isinstance(observed, DocumentAttestationJob):
@@ -133,7 +234,7 @@ class Continuity:
                     "attestation_unsupported",
                     "Observable attestation requires one tagged status contract",
                 )
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + (600 if PROOF_WORKFLOW.get() else 20)
             delay = observed.poll_after_seconds
             while observed.state in {"queued", "running"}:
                 if time.monotonic() + delay >= deadline:
@@ -151,6 +252,7 @@ class Continuity:
                             adapter_id=adapter.instance_id,
                             operation=statuses[0].name,
                             arguments={"job_id": observed.job_id},
+                            _internal=True,
                         )
                 except TimeoutError:
                     raise ProjectError(
@@ -217,12 +319,78 @@ class Continuity:
         return (matches[0], baseline.context_id) if len(matches) == 1 else None
 
     async def attest(self, project: str, request: AttestInput) -> AttestResult:
+        if request.mode not in {"bootstrap", "migrate"}:
+            return await self._attest(project, request)
+        baseline = self.baseline(project, request.document_id)
+        if request.mode == "bootstrap" and baseline is not None:
+            raise ProjectError(
+                "bootstrap_proof_required", "Bootstrap requires a missing baseline"
+            )
+        if request.mode == "migrate" and baseline is None:
+            raise ProjectError(
+                "migration_baseline_missing",
+                "Migration requires a baseline; use bootstrap",
+            )
+        document = next(
+            (
+                d
+                for d in self.service.store.documents(project)
+                if d.id == request.document_id
+            ),
+            None,
+        )
+        if document is None:
+            raise ProjectError("document_missing", "Document must already be bound")
+        parent = self.service.core.registry.get(request.adapter_id)
+        if (
+            parent.registration.application != document.application
+            or parent.registration.project_id != document.application_project_id
+        ):
+            raise ProjectError(
+                "document_mismatch", "Adapter does not represent the bound document"
+            )
+        if baseline and not baseline.artifact_sha256:
+            raise ProjectError(
+                "migration_artifact_missing",
+                "Baseline lacks durable trusted file SHA256",
+            )
+        if baseline and request.trusted_artifact_sha256 != baseline.artifact_sha256:
+            raise ProjectError(
+                "migration_file_mismatch", "Trusted artifact SHA256 differs"
+            )
+        artifact = self.service.proofs.artifact(
+            locator=(baseline.artifact_locator if baseline else None)
+            or request.trusted_artifact_locator
+            or document.locator
+            or parent.registration.project_path,
+            sha256=baseline.artifact_sha256
+            if baseline
+            else request.trusted_artifact_sha256,
+            project_id=document.application_project_id,
+        )
+        async with self.service.proofs.acquire(parent, artifact) as proof:
+            return await self._attest(project, request, proof, artifact.locator)
+
+    async def _attest(
+        self,
+        project: str,
+        request: AttestInput,
+        proof_adapter: "AdapterInfo | None" = None,
+        artifact_locator: str | None = None,
+    ) -> AttestResult:
         store = self.service.store
         documents = {d.id: d for d in store.documents(project)}
         document = documents.get(request.document_id)
         if document is None:
             raise ProjectError("document_missing", "Document must already be bound")
         adapter = self.service.core.registry.get(request.adapter_id)
+        if (
+            adapter.registration.runtime
+            and adapter.registration.runtime.role == "proof"
+        ):
+            raise ProjectError(
+                "proof_internal", "Managed proof hosts are not work targets"
+            )
         if (
             adapter.registration.application != document.application
             or adapter.registration.project_id != document.application_project_id
@@ -234,7 +402,13 @@ class Continuity:
         if request.mode == "migrate":
             async with self.service.mutations.lock:
                 return await self._migrate(
-                    project, request, document, adapter, baseline
+                    project,
+                    request,
+                    document,
+                    adapter,
+                    baseline,
+                    proof_adapter,
+                    artifact_locator,
                 )
         evidence = await self.observe(adapter)
         if request.mode == "capture":
@@ -310,7 +484,6 @@ class Continuity:
         else:
             if (
                 baseline is not None
-                or request.proof_adapter_id is None
                 or not request.trusted_artifact_sha256
                 or not request.provenance.strip()
             ):
@@ -321,7 +494,7 @@ class Continuity:
                         "loaded trusted artifact evidence"
                     ),
                 )
-            proof_adapter = self.service.core.registry.get(request.proof_adapter_id)
+            assert proof_adapter is not None
             proof = await self.observe(proof_adapter)
             if (
                 proof_adapter.registration.application != document.application
@@ -337,6 +510,25 @@ class Continuity:
                         "Independent accepted artifact and live content are not "
                         "proven equivalent"
                     ),
+                    live=dict(
+                        digest=evidence.digest,
+                        format=evidence.format,
+                        project_id=evidence.project_id,
+                        host=evidence.host_session_id,
+                        file_sha256=evidence.file_sha256,
+                    ),
+                    proof=dict(
+                        digest=proof.digest,
+                        format=proof.format,
+                        project_id=proof.project_id,
+                        host=proof.host_session_id,
+                        file_sha256=proof.file_sha256,
+                    ),
+                    differing_resources=[
+                        r.model_dump(mode="json")
+                        for r in proof.resources
+                        if r not in evidence.resources
+                    ][:8],
                 )
         if request.mode == "bootstrap":
             confirmed = await self.observe(adapter)
@@ -370,6 +562,8 @@ class Continuity:
             or "Verified content at the bound application document",
             resources=[r.model_dump(mode="json") for r in evidence.resources],
             resource_scope=evidence.resource_scope,
+            artifact_locator=artifact_locator
+            or (baseline.artifact_locator if baseline else evidence.file_locator),
             artifact_sha256=request.trusted_artifact_sha256
             if request.mode == "bootstrap"
             else (baseline.artifact_sha256 if baseline else evidence.file_sha256),
@@ -447,6 +641,8 @@ class Continuity:
         document: Document,
         adapter: "AdapterInfo",
         baseline: Baseline | None,
+        proof_adapter: "AdapterInfo | None",
+        artifact_locator: str | None,
     ) -> AttestResult:
         store = self.service.store
         if baseline is None:
@@ -482,8 +678,7 @@ class Continuity:
         with store.transaction() as db:
             store.expect(store.project(db, project), request.expected_revision)
         live = await self.observe(adapter)
-        assert request.proof_adapter_id is not None
-        proof_adapter = self.service.core.registry.get(request.proof_adapter_id)
+        assert proof_adapter is not None
         proof = await self.observe(proof_adapter)
         if (
             proof_adapter.registration.application != document.application
@@ -614,6 +809,7 @@ class Continuity:
                     update=dict(
                         format=live.format,
                         digest=live.digest,
+                        artifact_locator=artifact_locator,
                         host_session_id=live.host_session_id,
                         document_session_id=live.document_session_id,
                         provenance=request.provenance,

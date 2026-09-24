@@ -11,7 +11,8 @@ from tyvrana_protocol import DocumentState
 from tyvrana_core import AdapterServer, CoreConfig
 from tyvrana_core.projects.store import ProjectError
 
-from .test_continuity import establish
+from .proof_fixture import proof_artifact
+from .test_continuity import establish, evidence
 from .test_working_lineage import editor
 
 
@@ -32,10 +33,26 @@ from .test_working_lineage import editor
 )
 async def test_guarded_restore(tmp_path: Path, case: str, code: str | None) -> None:
     calls: list[dict[str, Any]] = []
+    faults: dict[str, Any] = {}
     async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
         async with (
-            editor(core, restores=calls) as native,
-            editor(core, "proof") as proof,
+            editor(core, restores=calls, faults=faults) as native,
+            proof_artifact(
+                core,
+                {
+                    **evidence(host="proof-host"),
+                    "resource_scope": "strong-closure",
+                    "resources": [
+                        dict(
+                            resource_kind="mesh",
+                            resource_id="mesh",
+                            state="present",
+                            name="Base",
+                            fingerprint="base-original",
+                        )
+                    ],
+                },
+            ) as proof,
         ):
             key, revision = await establish(core)
             applied = await core.projects.execute(
@@ -70,10 +87,8 @@ async def test_guarded_restore(tmp_path: Path, case: str, code: str | None) -> N
                 expected_revision=revision,
                 document_id="doc",
                 adapter_id="initial",
-                proof_adapter_id="proof",
                 expected_current=expected,
                 discard_current=True,
-                open_arguments={},
                 provenance="Discard known unsaved fixture edits",
             )
             if case == "checkpoint":
@@ -91,9 +106,9 @@ async def test_guarded_restore(tmp_path: Path, case: str, code: str | None) -> N
             elif case == "incomplete":
                 proof.update(status="unsupported", digest=None, omissions=["Unknown"])
             elif case == "post":
-                request["open_arguments"] = {"post_mismatch": True}
+                faults["post_mismatch"] = True
             elif case == "load":
-                request["open_arguments"] = {"load_failure": True}
+                faults["load_failure"] = True
             before = copy.deepcopy(native)
             if case == "authorization":
                 with pytest.raises(ValidationError):
@@ -103,6 +118,10 @@ async def test_guarded_restore(tmp_path: Path, case: str, code: str | None) -> N
             result = (
                 await core.projects.execute("project.restore", request)
             ).model_dump()
+            assert not core.projects.proofs.leases
+            assert [a.instance_id for a in core.registry.list(include_proofs=True)] == [
+                "initial"
+            ]
             if code:
                 assert result["state"] == "failed" and result["error_code"] == code, (
                     result

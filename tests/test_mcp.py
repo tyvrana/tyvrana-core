@@ -88,7 +88,7 @@ async def test_category_and_tag_discovery_filters() -> None:
         )
         assert not result.is_error
         operations = result.structured_content["operations"]
-        assert len(operations) == 12
+        assert len(operations) == 16
         assert all(
             o["category"] == "project" and "continuity" in o["tags"] for o in operations
         )

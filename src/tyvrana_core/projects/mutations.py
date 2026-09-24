@@ -237,6 +237,9 @@ class WorkingMutations:
                     updated = baseline.model_copy(
                         update={
                             "digest": receipt.after.digest,
+                            "artifact_locator": receipt.after.file_locator
+                            if is_save
+                            else baseline.artifact_locator,
                             "artifact_sha256": receipt.after.file_sha256
                             if is_save
                             else (

@@ -4,10 +4,10 @@ import hashlib
 import json
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 from tyvrana_protocol import OperationContract
 
-from .continuity import AttestInput, AttestResult
+from .continuity import AttestInput, AttestJob, AttestResult, AttestStatusInput
 from .models import (
     ApplyInput,
     ApplyResult,
@@ -26,6 +26,11 @@ from .models import (
 from .reconcile_models import ReconcileInput, ReconcileResult, ReconcileStatusInput
 from .restore_models import RestoreInput, RestoreResult, RestoreStatusInput
 
+
+class AttestResponse(RootModel[AttestResult | AttestJob]):
+    pass
+
+
 DECLARATIONS: dict[
     str, tuple[type[BaseModel], type[BaseModel], Literal["read_only", "mutating"], str]
 ] = {
@@ -36,9 +41,8 @@ DECLARATIONS: dict[
         "Explicitly discard the exact expected_current document and restore a trusted "
         "saved working checkpoint or the durable baseline (omit "
         "checkpoint_id). Requires "
-        "discard_current=true, provenance, and an independent proof_adapter_id already "
-        "loaded with the target artifact. Core verifies durable file/content/lineage "
-        "evidence before invoking the advertised document_open with open_arguments. "
+        "discard_current=true and provenance. Core automatically proves the durable "
+        "target locator/SHA in an owned disposable host before guarded document load. "
         "The adapter rechecks exact current state and file hash before load, then Core "
         "verifies strong content before restoring recorded freshness and working head. "
         "No force/trust-current option; no milestone reacceptance. New "
@@ -63,9 +67,8 @@ DECLARATIONS: dict[
         "Require the durable prior_digest, exact expected_digest, "
         "target unaccepted stage, "
         "provenance and at most 16 typed owner-scoped delta steps. "
-        "proof_adapter_id must be a "
-        "disposable independent host already loaded with exactly the "
-        "trusted prior document. "
+        "Core internally leases a disposable proof host loaded from the exact "
+        "durable prior artifact locator and SHA. "
         "Core replays only adapter-qualified recovery_replay operations "
         "ON THE PROOF HOST; "
         "the live document is read-only. Complete final content and "
@@ -90,19 +93,43 @@ DECLARATIONS: dict[
     ),
     "project.attest": (
         AttestInput,
-        AttestResult,
+        AttestResponse,
         "mutating",
         (
             "Establish strong document verification metadata or reattach "
             "exact accepted content. Capture requires current binding; "
             "reattach requires matching durable digest; bootstrap "
-            "requires an independently loaded trusted artifact SHA256 and"
+            "automatically proves the trusted artifact locator/SHA256 with"
             " provenance. Migrate requires explicit from_format/to_format, "
             "the existing baseline's durable file SHA256 and an independent "
             "matching new-format proof. It replaces only baseline metadata, "
             "derives freshness for unchanged historically accepted claims, "
             "and preserves acceptance history. No semantic revision churn."
         ),
+    ),
+    "project.attest_status": (
+        AttestStatusInput,
+        AttestJob,
+        "read_only",
+        "Observe retained automatic attestation proof without lifecycle choreography.",
+    ),
+    "project.attest_cancel": (
+        AttestStatusInput,
+        AttestJob,
+        "mutating",
+        "Cancel retained attestation and release its owned proof host.",
+    ),
+    "project.restore_cancel": (
+        RestoreStatusInput,
+        RestoreResult,
+        "mutating",
+        "Cancel retained restore and release its owned proof host; inspect live state.",
+    ),
+    "project.reconcile_cancel": (
+        ReconcileStatusInput,
+        ReconcileResult,
+        "mutating",
+        "Cancel retained reconciliation and release its owned proof host.",
     ),
     "project.create": (
         CreateInput,

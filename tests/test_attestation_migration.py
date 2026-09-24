@@ -11,7 +11,8 @@ from tyvrana_core import AdapterServer, CoreConfig
 from tyvrana_core.projects.continuity import AttestInput
 from tyvrana_core.projects.store import ProjectError
 
-from .test_continuity import establish, state
+from .proof_fixture import proof_artifact
+from .test_continuity import establish, evidence, state
 from .test_working_lineage import editor
 
 
@@ -77,7 +78,6 @@ def request(project: str, revision: int) -> dict[str, Any]:
         adapter_id="initial",
         expected_revision=revision,
         mode="migrate",
-        proof_adapter_id="proof",
         trusted_artifact_sha256="b" * 64,
         from_format="fixture-canonical",
         to_format="fixture-authored",
@@ -95,7 +95,7 @@ def snapshot(core: AdapterServer) -> dict[str, list[tuple[Any, ...]]]:
             for (table,) in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
-            if table != "document_attestations"
+            if table not in {"document_attestations", "document_mutations"}
         }
 
 
@@ -109,7 +109,25 @@ async def test_format_migration_preserves_history_and_is_idempotent(
 ) -> None:
     config = CoreConfig(port=0, state_directory=str(tmp_path))
     async with AdapterServer(config) as core:
-        async with editor(core) as live, editor(core, "proof") as proof:
+        async with (
+            editor(core) as live,
+            proof_artifact(
+                core,
+                {
+                    **evidence(host="proof-host"),
+                    "resource_scope": "strong-closure",
+                    "resources": [
+                        dict(
+                            resource_kind="mesh",
+                            resource_id="mesh",
+                            state="present",
+                            name="Base",
+                            fingerprint="base-original",
+                        )
+                    ],
+                },
+            ) as proof,
+        ):
             project, revision = await accepted_chain(core)
             before = snapshot(core)
             new_format(live, proof)
@@ -182,7 +200,25 @@ async def test_migration_rejects_untrusted_evidence(
     tmp_path: Path, case: str, code: str
 ) -> None:
     async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
-        async with editor(core) as live, editor(core, "proof") as proof:
+        async with (
+            editor(core) as live,
+            proof_artifact(
+                core,
+                {
+                    **evidence(host="proof-host"),
+                    "resource_scope": "strong-closure",
+                    "resources": [
+                        dict(
+                            resource_kind="mesh",
+                            resource_id="mesh",
+                            state="present",
+                            name="Base",
+                            fingerprint="base-original",
+                        )
+                    ],
+                },
+            ) as proof,
+        ):
             project, revision = await accepted_chain(core)
             new_format(live, proof)
             args = request(project, revision)
@@ -232,6 +268,10 @@ async def test_migration_rejects_untrusted_evidence(
             with pytest.raises(ProjectError) as error:
                 await core.projects.execute("project.attest", args)
             assert error.value.code == code
+            assert not core.projects.proofs.leases
+            assert [a.instance_id for a in core.registry.list(include_proofs=True)] == [
+                "initial"
+            ]
             assert snapshot(core) == before
             assert core.projects.continuity.baseline(project, "doc") == baseline_before
 
@@ -241,7 +281,25 @@ async def test_changed_claims_do_not_regain_freshness(
     tmp_path: Path, when: str
 ) -> None:
     async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
-        async with editor(core) as live, editor(core, "proof") as proof:
+        async with (
+            editor(core) as live,
+            proof_artifact(
+                core,
+                {
+                    **evidence(host="proof-host"),
+                    "resource_scope": "strong-closure",
+                    "resources": [
+                        dict(
+                            resource_kind="mesh",
+                            resource_id="mesh",
+                            state="present",
+                            name="Base",
+                            fingerprint="base-original",
+                        )
+                    ],
+                },
+            ) as proof,
+        ):
             project, revision = await accepted_chain(core)
             new_format(live, proof)
             if when == "after":
@@ -269,7 +327,25 @@ async def test_existing_gates_still_block_migrated_prerequisites(
     tmp_path: Path,
 ) -> None:
     async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
-        async with editor(core) as live, editor(core, "proof") as proof:
+        async with (
+            editor(core) as live,
+            proof_artifact(
+                core,
+                {
+                    **evidence(host="proof-host"),
+                    "resource_scope": "strong-closure",
+                    "resources": [
+                        dict(
+                            resource_kind="mesh",
+                            resource_id="mesh",
+                            state="present",
+                            name="Base",
+                            fingerprint="base-original",
+                        )
+                    ],
+                },
+            ) as proof,
+        ):
             project, revision = await accepted_chain(core)
             new_format(live, proof)
             await core.projects.execute("project.attest", request(project, revision))
@@ -299,7 +375,25 @@ async def test_later_dependency_changes_invalidate_migration_proof(
     tmp_path: Path, dependency: str
 ) -> None:
     async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
-        async with editor(core) as live, editor(core, "proof") as proof:
+        async with (
+            editor(core) as live,
+            proof_artifact(
+                core,
+                {
+                    **evidence(host="proof-host"),
+                    "resource_scope": "strong-closure",
+                    "resources": [
+                        dict(
+                            resource_kind="mesh",
+                            resource_id="mesh",
+                            state="present",
+                            name="Base",
+                            fingerprint="base-original",
+                        )
+                    ],
+                },
+            ) as proof,
+        ):
             project, revision = await accepted_chain(core)
             new_format(live, proof)
             await core.projects.execute("project.attest", request(project, revision))

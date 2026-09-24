@@ -98,6 +98,7 @@ class AdapterServer:
                 self.artifacts.close()
                 return
             self._stopping = True
+            await self.projects.continuity.shutdown()
             await self.projects.restores.shutdown()
             await self.projects.reconciliation.shutdown()
             await self.projects.mutations.shutdown()
@@ -155,6 +156,7 @@ class AdapterServer:
             connection = AdapterConnection(
                 websocket, registration, self.config.send_timeout, self.artifacts
             )
+            self.projects.proofs.admit(registration)
             self.registry._add(connection)
             logger.info("Adapter registered: %s", registration.instance_id)
             async for data in websocket:

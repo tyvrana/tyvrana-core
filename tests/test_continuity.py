@@ -16,6 +16,7 @@ from tyvrana_protocol import (
     OperationContract,
     OperationRequest,
     OperationSuccess,
+    ProofHostStart,
 )
 from websockets.asyncio.client import connect
 
@@ -24,6 +25,7 @@ from tyvrana_core.projects.models import ApplyInput, BindingObservation
 from tyvrana_core.projects.store import ProjectError
 
 from .helpers import FakeAdapter, eventually
+from .proof_fixture import ManagedProofFixture
 
 
 def evidence(
@@ -41,6 +43,7 @@ def evidence(
         omissions=[],
         elapsed_ms=1.0,
         file_sha256="b" * 64,
+        file_locator="/fixture.blend",
     )
 
 
@@ -51,8 +54,14 @@ async def connected(
     value: dict[str, Any],
     *,
     asynchronous: bool = False,
+    lease: ProofHostStart | None = None,
 ) -> AsyncIterator[None]:
-    async with connect(core.uri, proxy=None) as socket:
+    lifecycle = ManagedProofFixture(
+        core,
+        value,
+        lambda key, saved, intent: connected(core, key, saved, lease=intent),
+    )
+    async with lifecycle.stack, connect(core.uri, proxy=None) as socket:
         fake = FakeAdapter(socket)
         operation = OperationContract(
             name="editor.document.attest",
@@ -90,7 +99,9 @@ async def connected(
                     instance_id=instance,
                     application="editor",
                     project_id="saved",
-                    operations=operations,
+                    operations=(*operations, *lifecycle.contracts()),
+                    runtime=lifecycle.runtime(lease),
+                    project_path="/fixture.blend",
                 )
             )
             await fake.send(
@@ -102,6 +113,15 @@ async def connected(
             while True:
                 request = await fake.receive()
                 assert isinstance(request, OperationRequest)
+                if request.operation.startswith("editor.proof."):
+                    await fake.send(
+                        OperationSuccess(
+                            type="operation.success",
+                            request_id=request.request_id,
+                            result=await lifecycle.respond(request),
+                        )
+                    )
+                    continue
                 await fake.send(
                     OperationSuccess(
                         type="operation.success",
@@ -297,14 +317,13 @@ async def test_bootstrap_requires_independent_exact_trusted_artifact(
                         expected_revision=revision,
                     ),
                 )
-            async with connected(core, "proof", evidence(host="independent")):
+            async with connected(core, "other-work", evidence(host="independent")):
                 arguments: dict[str, Any] = dict(
                     project_id=key,
                     document_id="doc",
                     adapter_id="live",
                     expected_revision=revision,
                     mode="bootstrap",
-                    proof_adapter_id="proof",
                     trusted_artifact_sha256="c" * 64,
                     provenance="Previously preserved accepted artifact SHA256",
                 )
@@ -320,7 +339,7 @@ async def test_bootstrap_requires_independent_exact_trusted_artifact(
                         dict(
                             project_id=key,
                             document_id="doc",
-                            adapter_id="proof",
+                            adapter_id="other-work",
                             expected_revision=revision,
                             mode="reattach",
                         ),
@@ -332,7 +351,7 @@ async def test_bootstrap_requires_independent_exact_trusted_artifact(
                         dict(
                             project_id=key,
                             document_id="doc",
-                            adapter_id="proof",
+                            adapter_id="other-work",
                             expected_revision=revision,
                             mode="capture",
                         ),

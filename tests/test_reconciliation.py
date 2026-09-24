@@ -10,7 +10,8 @@ from tyvrana_core import AdapterServer, CoreConfig
 from tyvrana_core.projects.models import ApplyInput
 from tyvrana_core.projects.store import ProjectError
 
-from .test_continuity import establish
+from .proof_fixture import proof_artifact
+from .test_continuity import establish, evidence
 from .test_working_lineage import editor
 
 
@@ -18,6 +19,7 @@ from .test_working_lineage import editor
     "case, expected",
     [
         ("known", None),
+        ("replay_failure", "fixture_rollback"),
         ("extra", "reconciliation_delta_mismatch"),
         ("upstream", "reconciliation_upstream_changed"),
         ("hash", "reconciliation_delta_mismatch"),
@@ -33,7 +35,25 @@ async def test_reconciliation_safety(
     tmp_path: Path, case: str, expected: str | None
 ) -> None:
     async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
-        async with editor(core) as native, editor(core, "proof") as proof:
+        async with (
+            editor(core) as native,
+            proof_artifact(
+                core,
+                {
+                    **evidence(host="proof-host"),
+                    "resource_scope": "strong-closure",
+                    "resources": [
+                        dict(
+                            resource_kind="mesh",
+                            resource_id="mesh",
+                            state="present",
+                            name="Base",
+                            fingerprint="base-original",
+                        )
+                    ],
+                },
+            ) as proof,
+        ):
             key, revision = await establish(core)
             await core.projects.execute(
                 "project.apply",
@@ -103,7 +123,6 @@ async def test_reconciliation_safety(
                 expected_revision=revision,
                 document_id="doc",
                 adapter_id="initial",
-                proof_adapter_id="proof",
                 stage_id="m2",
                 prior_digest=head.digest,
                 expected_digest="f" * 64
@@ -113,7 +132,11 @@ async def test_reconciliation_safety(
                 delta=[
                     dict(
                         operation="editor.change",
-                        arguments={"mode": "downstream"},
+                        arguments={
+                            "mode": "failure"
+                            if case == "replay_failure"
+                            else "downstream"
+                        },
                         owner_entity_id="part" if case == "owner" else "harness",
                     )
                 ],
@@ -122,6 +145,10 @@ async def test_reconciliation_safety(
             result = (
                 await core.projects.execute("project.reconcile", request)
             ).model_dump()
+            assert not core.projects.proofs.leases
+            assert [a.instance_id for a in core.registry.list(include_proofs=True)] == [
+                "initial"
+            ]
             assert native == live_before
             if expected:
                 assert result["state"] == "failed", result

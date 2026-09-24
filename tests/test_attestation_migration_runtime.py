@@ -14,6 +14,7 @@ from tyvrana_core.projects.store import ProjectError
 from tyvrana_core.registry import AdapterInfo
 
 from .helpers import eventually
+from .proof_fixture import proof_artifact
 from .test_attestation_migration import accepted_chain, new_format, request, snapshot
 from .test_continuity import state
 from .test_working_lineage import editor
@@ -73,10 +74,16 @@ async def test_migration_runtime_continuity(
     async with AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path))) as core:
         async with AsyncExitStack() as stack:
             live_stack = await stack.enter_async_context(AsyncExitStack())
-            proof_stack = await stack.enter_async_context(AsyncExitStack())
             live = await live_stack.enter_async_context(editor(core))
             project, revision = await accepted_chain(core)
             new_format(live)
+            proof_value = copy.deepcopy(live)
+            proof_value["host_session_id"] = "proof-host"
+            if case == "proof_failure":
+                proof_value.update(
+                    status="unsupported", digest=None, omissions=["Unavailable proof"]
+                )
+            await stack.enter_async_context(proof_artifact(core, proof_value))
             live["work"] = work(1.25)
             baseline = core.projects.continuity.baseline(project, "doc")
             before = snapshot(core)
@@ -87,22 +94,17 @@ async def test_migration_runtime_continuity(
 
             async def observed(adapter: AdapterInfo) -> DocumentAttestation:
                 nonlocal proof_started, proof_finished
-                calls.append(adapter.instance_id)
-                if adapter.instance_id == "proof" and case == "proof_timeout":
+                is_proof = (
+                    adapter.registration.runtime is not None
+                    and adapter.registration.runtime.role == "proof"
+                )
+                calls.append("proof" if is_proof else adapter.instance_id)
+                if is_proof and case == "proof_timeout":
                     raise OperationTimeout("proof", "attest", 1)
                 result = await observe(adapter)
                 if adapter.instance_id == "initial" and not proof_started:
-                    # Register B after the live source has already been captured.
                     proof_started = True
-                    proof = await proof_stack.enter_async_context(editor(core, "proof"))
-                    new_format(proof)
-                    if case == "proof_failure":
-                        proof.update(
-                            status="unsupported",
-                            digest=None,
-                            omissions=["Unavailable proof"],
-                        )
-                elif adapter.instance_id == "proof" and not proof_finished:
+                elif is_proof and not proof_finished:
                     proof_finished = True
                     live["work"] = work(9.75)
                     if case == "content":
@@ -131,13 +133,6 @@ async def test_migration_runtime_continuity(
                             editor(core, "latest-proof")
                         )
                         new_format(distractor)
-                    if case in {"normal", "registry_churn", "repeat"}:
-                        await proof_stack.aclose()
-                        await eventually(
-                            lambda: all(
-                                a.instance_id != "proof" for a in core.registry.list()
-                            )
-                        )
                 return result
 
             monkeypatch.setattr(core.projects.continuity, "observe", observed)
@@ -176,8 +171,6 @@ async def test_migration_runtime_continuity(
             assert snapshot(core) == before
             assert await state(core, project) == ("accepted", revision)
             if case == "repeat":
-                proof = await stack.enter_async_context(editor(core, "proof"))
-                new_format(proof)
                 migrated = core.projects.continuity.baseline(project, "doc")
                 repeated = (
                     await core.projects.execute(

@@ -46,7 +46,7 @@ class AdapterRegistry:
         except TimeoutError:
             pass
 
-    def list(self) -> tuple[AdapterInfo, ...]:
+    def list(self, *, include_proofs: bool = False) -> tuple[AdapterInfo, ...]:
         return tuple(
             AdapterInfo(
                 connection.registration,
@@ -56,6 +56,11 @@ class AdapterRegistry:
             )
             for connection in self._connections.values()
             if connection.connected
+            and (
+                include_proofs
+                or connection.registration.runtime is None
+                or connection.registration.runtime.role == "work"
+            )
         )
 
     def get(self, instance_id: str) -> AdapterInfo:
