@@ -250,3 +250,9 @@ before copying the store. Do not copy a live main database while ignoring its WA
 No client-vendor session identifier, transcript format, model, account, telemetry,
 remote database or inference service is part of this contract. This foundation does
 not promise arbitrary long-term/distributed scale or universal native edit detection.
+
+A retained guarded mutation may briefly lose routing when its adapter refreshes
+document metadata after saving. Core observes registry changes and resumes only
+read-only status retrieval for the same job and adapter within the existing
+deadline. It never resubmits the mutation. Completed receipts still require exact
+host/document/project identity and content evidence before semantic commit.

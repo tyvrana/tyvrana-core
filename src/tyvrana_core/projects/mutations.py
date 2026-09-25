@@ -16,6 +16,7 @@ from tyvrana_protocol.mutations import (
     DocumentMutationResult,
 )
 
+from ..errors import AdapterDisconnected, AdapterNotFound
 from .continuity import AttestInput, Baseline
 from .models import Binding, Change
 from .store import ProjectError, now
@@ -309,7 +310,11 @@ class WorkingMutations:
         statuses = [
             c for c in registration.operations if "document_mutation_status" in c.tags
         ]
-        if len(mutations) != 1 or len(statuses) != 1:
+        if (
+            len(mutations) != 1
+            or len(statuses) != 1
+            or statuses[0].effect != "read_only"
+        ):
             raise ProjectError(
                 "mutation_unsupported", "Adapter lacks guarded mutation receipts"
             )
@@ -324,12 +329,22 @@ class WorkingMutations:
         async with asyncio.timeout(180):
             while job.state in {"queued", "running"}:
                 await asyncio.sleep(delay)
-                response = await self.service.core.dispatcher.execute(
-                    adapter_id=registration.instance_id,
-                    operation=statuses[0].name,
-                    arguments={"job_id": job.job_id},
-                    _internal=True,
-                )
+                # A retained native job can change document/path metadata and
+                # reconnect while it runs. Wait for routing to return; retry only
+                # its read-only status, never the mutation that already started.
+                registry = self.service.core.registry
+                while True:
+                    revision = registry.revision
+                    try:
+                        response = await self.service.core.dispatcher.execute(
+                            adapter_id=registration.instance_id,
+                            operation=statuses[0].name,
+                            arguments={"job_id": job.job_id},
+                            _internal=True,
+                        )
+                        break
+                    except (AdapterNotFound, AdapterDisconnected):
+                        await registry.wait_for_change(revision, 180)
                 job = DocumentMutationJob.model_validate(response.result)
                 delay = min(2.0, delay * 1.5)
         if job.state != "completed" or job.result is None:
