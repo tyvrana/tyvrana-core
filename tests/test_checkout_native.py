@@ -27,18 +27,27 @@ pytestmark = pytest.mark.skipif(
 )
 
 HOST = """import importlib, os, time
+import addon_utils
 from pathlib import Path
 import bpy
-lifecycle = importlib.import_module("bl_ext.user_default.tyvrana_blender.lifecycle")
-addon = bpy.context.preferences.addons["bl_ext.user_default.tyvrana_blender"]
-preferences = addon.preferences
-preferences.port = int(os.environ["CHECKOUT_TEST_PORT"])
-lifecycle._backend.restart()
+# Select/validate the endpoint before enabling. Installation never persists enablement.
+port = int(os.environ["CHECKOUT_TEST_PORT"])
+assert 1 <= port <= 65535
+module = "bl_ext.user_default.tyvrana_blender"
+addon_utils.enable(module, default_set=True)
+lifecycle = importlib.import_module(module + ".lifecycle")
+assert lifecycle._backend is not None
+# Registration installs a deferred timer; no networking may precede configuration.
+assert lifecycle._backend._runtime is None
+bpy.context.preferences.addons[module].preferences.port = port
+print("FIXTURE_ENDPOINT", port, "NETWORK_NOT_STARTED", flush=True)
 control = Path(os.environ["CHECKOUT_TEST_CONTROL"])
 deadline = time.monotonic() + 600
 try:
     while time.monotonic() < deadline:
         lifecycle._backend.pump()
+        if os.environ.get("CHECKOUT_TEST_FAIL_START") == "1":
+            raise RuntimeError("Injected fixture startup failure")
         if bpy.app.timers.is_registered(lifecycle._poll):
             if lifecycle._poll() is None:
                 bpy.app.timers.unregister(lifecycle._poll)
@@ -48,11 +57,17 @@ try:
     else:
         raise RuntimeError("Native checkout fixture exceeded deadline")
 finally:
+    runtime = lifecycle._backend._runtime
+    worker = runtime.worker if runtime is not None else None
     lifecycle.disable()
+    assert lifecycle._backend is None
+    assert worker is None or worker.process.returncode == 0
+    print("FIXTURE_CLEANED", flush=True)
 """
 
 
-async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
+@pytest.mark.parametrize("repetition", range(3))
+async def test_packaged_checkpoint_checkout(tmp_path: Path, repetition: int) -> None:
     package = await asyncio.to_thread(
         Path(os.environ["TYVRANA_BLENDER_PACKAGE"]).resolve
     )
@@ -72,7 +87,6 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
         "install-file",
         "--repo",
         "user_default",
-        "--enable",
         str(package),
         env=env,
         stdout=asyncio.subprocess.PIPE,
@@ -184,7 +198,9 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                 return dict(result)
 
             @asynccontextmanager
-            async def host(name: str) -> AsyncIterator[None]:
+            async def host(
+                name: str, *, fail_start: bool = False
+            ) -> AsyncIterator[None]:
                 control = tmp_path / name
                 control.mkdir()
                 with (control / "host.log").open("wb") as host_log:
@@ -199,11 +215,14 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                             **env,
                             "CHECKOUT_TEST_PORT": str(port),
                             "CHECKOUT_TEST_CONTROL": str(control),
+                            "CHECKOUT_TEST_FAIL_START": str(int(fail_start)),
                         },
                         stdout=host_log,
                         stderr=host_log,
                     )
                     try:
+                        if fail_start:
+                            await asyncio.wait_for(process.wait(), 20)
                         yield
                     finally:
                         (control / "stop").touch()
@@ -212,10 +231,16 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                         except TimeoutError:
                             process.kill()
                             await process.wait()
-                        assert process.returncode == 0, (
-                            control / "host.log"
-                        ).read_text()
+                        host_output = (control / "host.log").read_text()
+                        assert process.returncode == int(fail_start), host_output
+                        assert "FIXTURE_CLEANED" in host_output
+                        assert (
+                            f"FIXTURE_ENDPOINT {port} NETWORK_NOT_STARTED"
+                            in host_output
+                        )
 
+            async with host("startup-failure", fail_start=True):
+                outcomes["startup_failure_cleanup"] = "PASS"
             async with host("first"):
                 adapter = await discover()
                 await execute(adapter, "blender.file.new", discard_current=True)
@@ -595,13 +620,15 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                     location=[0, 0, 0.1],
                 )
                 await check()
-                await execute(
-                    adapter,
-                    "blender.file.save",
-                    filepath=str(tmp_path / "continued.blend"),
-                    overwrite=True,
-                )
-                await check()
+                for index in range(3):
+                    await execute(
+                        adapter,
+                        "blender.file.save",
+                        filepath=str(tmp_path / f"continued-{index}.blend"),
+                        overwrite=True,
+                    )
+                    await check()
+                outcomes["post_checkout_save_as_count"] = 3
                 checkpoint = await apply(
                     checkpoint=dict(id="continued", label="Continued working state")
                 )
@@ -631,6 +658,10 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                 assert reloaded["digest"] == continued["digest"]
                 await check()
                 outcomes["reload"] = "PASS"
+                for _ in range(2):
+                    await execute(adapter, "blender.file.save", overwrite=True)
+                    await check()
+                outcomes["post_reload_same_path_save_count"] = 2
             async with host("restart"):
                 adapter = await discover()
                 current = await execute(adapter, "blender.document.attest")
@@ -676,6 +707,7 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                 assert structure["bone_count"] == 64
                 assert len((await tool("tyvrana_list_adapters", {}))["adapters"]) == 1
             outcomes.update(
+                repetition=repetition,
                 calls=len(calls),
                 request_bytes=sum(c["request_bytes"] for c in calls),
                 response_bytes=sum(c["response_bytes"] for c in calls),
