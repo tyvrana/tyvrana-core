@@ -102,10 +102,11 @@ Synchronous artifact-free mutations are supported; adapters reject unsupported n
 job/artifact contracts before invoking them. This does not retroactively authorize
 content created before mutation tracking or repair an already diverged document.
 
-Historical views also use durable acceptance entries already present in the project
-journal and named checkpoints. A checkpoint alone proves historical accepted status;
-it does not invent an exact acceptance revision or an expanded resource snapshot.
-Reading this evidence never restores current validity or changes semantic revision.
+Historical acceptance comes from durable acceptance entries, journal acceptance events
+and complete revision history. Checkpoint summary lists do not prove acceptance.
+A checked-out branch inherits acceptance metadata from its exact revision, excluding
+acceptance acquired only on the abandoned branch. Reading historical evidence never
+restores current validity or changes semantic revision.
 
 ## Recovering a known transition without a receipt
 

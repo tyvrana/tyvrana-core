@@ -1,6 +1,7 @@
 """Checkpoint checkout replaces active meaning without rewriting failed history."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,12 @@ from .test_working_lineage import editor
         "proof",
         "stale_checkpoint",
         "atomic",
-        "saved_record_revisions",
+        "summary_conflict",
+        "incomplete_history",
+        "corrupt_history",
+        "foreign_history",
+        "checkpoint_revision_conflict",
+        "document_summary_conflict",
         "migrated_checkpoint",
         "migrated_stale_checkpoint",
     ],
@@ -135,7 +141,21 @@ async def test_checkout(
                         dict(kind="entity", id="part", label="Changed upstream claim")
                     ]
                 )
-            await apply(checkpoint=dict(id="foundation", label="Durable foundation"))
+            foundation_validation = dict(
+                kind="validation",
+                id="foundation_check",
+                label="Foundation",
+                validation_type="inspection",
+                entity_ids=["harness"],
+                evidence_ids=["proof2"],
+                summary="Pending final closure",
+                status="failed",
+                freshness="stale",
+            )
+            await apply(
+                upsert=[foundation_validation],
+                checkpoint=dict(id="foundation", label="Durable foundation"),
+            )
             base = revision
             store = core.projects.store
             with store.transaction() as db:
@@ -146,6 +166,33 @@ async def test_checkout(
                         "SELECT * FROM journal WHERE project_id=?", (key,)
                     )
                 ]
+            # R+1 is a legitimate closure, but must not leak into checkout of R.
+            await apply(
+                upsert=[
+                    {
+                        **foundation_validation,
+                        "status": "passed",
+                        "freshness": "current",
+                    }
+                ]
+            )
+            if case not in {"stale_checkpoint", "migrated_stale_checkpoint"}:
+                await apply(
+                    project=dict(stage=""),
+                    upsert=[
+                        {
+                            **foundation_validation,
+                            "status": "passed",
+                            "freshness": "current",
+                        },
+                        {
+                            **m3,
+                            "status": "accepted",
+                            "validation_ids": ["foundation_check"],
+                            "acceptance": "Qualified experimental foundation",
+                        },
+                    ],
+                )
             # Reopening changes claim text; content-only restore rejects it.
             await apply(
                 project=dict(stage=""),
@@ -240,21 +287,69 @@ async def test_checkout(
 
                 monkeypatch.setattr(store, "_integrity", fail)
                 error = "fixture_commit_failure"
-            elif case == "saved_record_revisions" or case.startswith("migrated"):
+            elif case in {"incomplete_history", "corrupt_history", "foreign_history"}:
                 with store.transaction(write=True) as db:
-                    row = db.execute(
-                        "SELECT data FROM checkpoint_contents WHERE project_id=? "
-                        "AND id='foundation'",
-                        (key,),
-                    ).fetchone()
-                    snapshot = json.loads(row[0])
-                    snapshot.pop("record_revisions")
-                    snapshot.pop("project")
+                    if case == "incomplete_history":
+                        db.execute(
+                            "DELETE FROM revision_states WHERE project_id=? AND "
+                            "revision=?",
+                            (key, base),
+                        )
+                        error = "history_incomplete"
+                    elif case == "corrupt_history":
+                        db.execute(
+                            "UPDATE revision_states SET data='{}' WHERE "
+                            "project_id=? AND revision=?",
+                            (key, base),
+                        )
+                        error = "history_corrupt"
+                    else:
+                        other = json.loads(
+                            db.execute(
+                                "SELECT data FROM revision_states WHERE "
+                                "project_id=? AND revision=?",
+                                (key, base),
+                            ).fetchone()[0]
+                        )
+                        other["project"]["id"] = "foreign"
+                        encoded = json.dumps(other)
+                        db.execute(
+                            "UPDATE revision_states SET data=?,sha256=? WHERE "
+                            "project_id=? AND revision=?",
+                            (
+                                encoded,
+                                hashlib.sha256(encoded.encode()).hexdigest(),
+                                key,
+                                base,
+                            ),
+                        )
+                        error = "history_corrupt"
+            elif case == "checkpoint_revision_conflict":
+                with store.transaction(write=True) as db:
                     db.execute(
-                        "UPDATE checkpoint_contents SET data=? WHERE project_id=? "
-                        "AND id='foundation'",
-                        (json.dumps(snapshot), key),
+                        "UPDATE checkpoints SET revision=revision+1 "
+                        "WHERE project_id=? AND id='foundation'",
+                        (key,),
                     )
+                error = "history_corrupt"
+            elif case == "document_summary_conflict":
+                with store.transaction(write=True) as db:
+                    db.execute(
+                        "UPDATE checkpoints SET "
+                        "data=json_set(data,'$.document_states.doc.digest',?) "
+                        "WHERE project_id=? AND id='foundation'",
+                        ("f" * 64, key),
+                    )
+                error = "restore_target_mismatch"
+            # Summary metadata never overrides revision state or format proofs.
+            with store.transaction(write=True) as db:
+                db.execute(
+                    "UPDATE checkpoints SET "
+                    "data=json_set(data,'$.accepted_milestones',json('[]'),"
+                    "'$.accepted_count',0,'$.validation_counts',json('{}'),"
+                    "'$.stage','wrong-summary') WHERE project_id=? AND id='foundation'",
+                    (key,),
+                )
             with store.transaction() as db:
                 before = store.working_snapshot(db, store.project(db, key))
                 journal = [
@@ -339,6 +434,18 @@ async def test_checkout(
             else:
                 assert statuses["stage"] == "accepted" and statuses["m2"] == "accepted"
             assert statuses["m3"] == "in_progress"
+            m3_view = next(v for v in packet["records"] if v["record"]["id"] == "m3")
+            assert "historical_status" not in m3_view
+            assert "accepted_revision" not in m3_view
+            delta = (
+                await core.projects.execute(
+                    "project.delta", dict(project_id=key, since_revision=base, limit=50)
+                )
+            ).model_dump()
+            assert any(
+                c["id"] == "failed" and c["action"] == "created"
+                for c in delta["changes"]
+            )
             repeated = (
                 await core.projects.execute("project.restore", request)
             ).model_dump()
@@ -355,6 +462,42 @@ async def test_checkout(
                 again["already_current"] and again["revision"] == result["revision"]
             ), again
             if case not in {"stale_checkpoint", "migrated_stale_checkpoint"}:
+                values = {v["record"]["id"]: v for v in packet["records"]}
+                assert values["foundation_check"]["record"]["status"] == "failed"
+                assert values["foundation_check"]["freshness"] == "stale"
+                assert packet["project"]["next_action"] == "Continue the foundation"
+                revision = again["revision"]
+                closure = await apply(
+                    upsert=[
+                        {
+                            **foundation_validation,
+                            "status": "passed",
+                            "freshness": "current",
+                        }
+                    ],
+                    checkpoint=dict(id="closed", label="Foundation closure"),
+                )
+                expected_accepted = (
+                    {"stage", "m2", "second"}
+                    if case.startswith("migrated")
+                    else {"stage", "m2"}
+                )
+                assert (
+                    set(closure["checkpoint"]["accepted_milestones"])
+                    == expected_accepted
+                )
+                assert closure["checkpoint"]["accepted_count"] == len(expected_accepted)
+                with store.transaction() as db:
+                    at_r = store.materialize_revision(db, key, base)
+                    at_r1 = store.materialize_revision(db, key, base + 1)
+                    assert at_r["records"]["foundation_check"]["status"] == "failed"
+                    assert at_r1["records"]["foundation_check"]["status"] == "passed"
+                    assert (
+                        store.materialize_revision(
+                            db, key, result["abandoned_revision"]
+                        )["records"]["failed"]["status"]
+                        == "open"
+                    )
                 await core.dispatcher.execute(
                     adapter_id="initial",
                     operation="editor.change",

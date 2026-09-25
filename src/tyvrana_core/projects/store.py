@@ -1,5 +1,6 @@
 "Local materialized semantic state and bounded revision journal in SQLite."
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -149,11 +150,12 @@ class ProjectStore:
                         id TEXT NOT NULL, data TEXT NOT NULL,
                         PRIMARY KEY(project_id,revision,kind,id)
                     );
-                    CREATE TABLE IF NOT EXISTS checkpoint_contents (
-                        project_id TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL,
-                        PRIMARY KEY(project_id,id),
-                        FOREIGN KEY(project_id,id) REFERENCES checkpoints(project_id,id)
-                            ON DELETE CASCADE
+                    CREATE TABLE IF NOT EXISTS revision_states (
+                        project_id TEXT NOT NULL REFERENCES projects(id)
+                            ON DELETE CASCADE,
+                        revision INTEGER NOT NULL, data TEXT NOT NULL,
+                        sha256 TEXT NOT NULL,
+                        PRIMARY KEY(project_id,revision)
                     );
                     CREATE TABLE IF NOT EXISTS checkpoints (
                         project_id TEXT NOT NULL
@@ -176,7 +178,20 @@ class ProjectStore:
         )
         try:
             db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
+            initial = (
+                {
+                    r[0]: json.loads(r[1])["revision"]
+                    for r in db.execute("SELECT id,data FROM projects")
+                }
+                if write
+                else {}
+            )
             yield db
+            if write:
+                for row in db.execute("SELECT data FROM projects").fetchall():
+                    project = Project.model_validate_json(row[0])
+                    if initial.get(project.id) != project.revision:
+                        self._retain_revision(db, project)
             db.commit()
         except BaseException:
             db.rollback()
@@ -675,17 +690,11 @@ class ProjectStore:
                 maximum=MAX_CHECKPOINTS,
             )
         gates = self._gates(db, project.id, connections, set())
-        accepted = [
-            r[0]
-            for r in db.execute(
-                (
-                    "SELECT id FROM records WHERE project_id=? AND kind='milestone' "
-                    "AND json_extract(data,'$.status')='accepted' ORDER BY id"
-                ),
-                (project.id,),
-            )
-            if not gates.acceptance[r[0]]
-        ]
+        accepted = sorted(
+            key
+            for key, milestone in gates.milestones.items()
+            if milestone.status == "accepted" and not gates.acceptance[key]
+        )
         documents = [
             r[0]
             for r in db.execute(
@@ -749,11 +758,7 @@ class ProjectStore:
             "INSERT INTO checkpoints VALUES (?,?,?,?)",
             (project.id, marker.id, project.revision, checkpoint.model_dump_json()),
         )
-        content = self.working_snapshot(db, project)
-        db.execute(
-            "INSERT INTO checkpoint_contents VALUES (?,?,?)",
-            (project.id, marker.id, json.dumps(content)),
-        )
+        self._retain_revision(db, project)
         self._change(
             db,
             project.id,
@@ -767,8 +772,9 @@ class ProjectStore:
         )
         return checkpoint
 
-    @staticmethod
-    def working_snapshot(db: sqlite3.Connection, project: Project) -> dict[str, Any]:
+    def working_snapshot(
+        self, db: sqlite3.Connection, project: Project
+    ) -> dict[str, Any]:
         """Complete semantic head; runtime evidence retains its original context."""
         content: dict[str, Any] = {
             "project": project.model_dump(mode="json"),
@@ -799,7 +805,135 @@ class ProjectStore:
             ).fetchone()
             else {}
         )
+        content["historical_acceptances"] = {
+            r[0]: self._accepted_revision(db, project, r[0])
+            for r in db.execute(
+                "SELECT id FROM records WHERE project_id=? AND kind='milestone'",
+                (project.id,),
+            )
+        }
         return content
+
+    def _accepted_revision(
+        self, db: sqlite3.Connection, project: Project, record_id: str
+    ) -> int | None:
+        lower = project.checkout_revision or 0
+        row = db.execute(
+            "SELECT max(revision) FROM ("
+            "SELECT revision FROM milestone_acceptances WHERE "
+            "project_id=? AND milestone_id=? UNION ALL "
+            "SELECT revision FROM journal WHERE project_id=? AND "
+            "kind='milestone' AND id=? AND "
+            "json_extract(data,'$.status')='accepted' AND "
+            "json_extract(data,'$.action') IN ('created','updated')) "
+            "WHERE revision>=?",
+            (project.id, record_id, project.id, record_id, lower),
+        ).fetchone()
+        accepted = row[0] if row else None
+        # The working branch inherits acceptance only from its exact base. A normal
+        # head also retains acceptance after compact journal entries have expired.
+        base_revision: int | None
+        if project.working_base_revision is not None:
+            base_revision = project.working_base_revision
+        else:
+            latest = db.execute(
+                "SELECT max(revision) FROM revision_states WHERE project_id=? "
+                "AND revision<=?",
+                (project.id, project.revision),
+            ).fetchone()
+            base_revision = latest[0] if latest else None
+        if base_revision is not None:
+            base = db.execute(
+                "SELECT json_extract(data,'$.historical_acceptances') FROM "
+                "revision_states WHERE project_id=? AND revision=?",
+                (project.id, base_revision),
+            ).fetchone()
+            if base:
+                previous = json.loads(base[0]).get(record_id)
+                accepted = max(accepted or 0, previous or 0) or None
+        return accepted
+
+    def _retain_revision(self, db: sqlite3.Connection, project: Project) -> None:
+        """Retain complete values atomically with their semantic revision."""
+        content = self.working_snapshot(db, project)
+        encoded = json.dumps(content, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(encoded.encode()).hexdigest()
+        prior = db.execute(
+            "SELECT sha256 FROM revision_states WHERE project_id=? AND revision=?",
+            (project.id, project.revision),
+        ).fetchone()
+        if prior:
+            if prior[0] != digest:
+                raise ProjectError(
+                    "history_conflict",
+                    "Revision already has different immutable values",
+                )
+            return
+        db.execute(
+            "INSERT INTO revision_states VALUES (?,?,?,?)",
+            (project.id, project.revision, encoded, digest),
+        )
+
+    def materialize_revision(
+        self, db: sqlite3.Connection, project_id: str, revision: int
+    ) -> dict[str, Any]:
+        """Read exact values; never infer them from change or marker summaries."""
+        current = self.project(db, project_id)
+        if revision < current.history_floor:
+            raise ProjectError("history_expired", "Revision is below the history floor")
+        row = db.execute(
+            "SELECT data,sha256 FROM revision_states WHERE project_id=? AND revision=?",
+            (project_id, revision),
+        ).fetchone()
+        if row is None:
+            raise ProjectError(
+                "history_incomplete",
+                "Complete revision values are unavailable; checkpoint summaries "
+                "and change labels cannot reconstruct missing history",
+                revision=revision,
+            )
+        try:
+            if hashlib.sha256(row[0].encode()).hexdigest() != row[1]:
+                raise ValueError("Revision checksum differs")
+            content = json.loads(row[0])
+            saved = Project.model_validate(content["project"])
+            if saved.id != project_id or saved.revision != revision:
+                raise ValueError("Revision identity differs")
+            records = {
+                k: RECORD.validate_python(v) for k, v in content["records"].items()
+            }
+            if set(records) != set(content["record_revisions"]):
+                raise ValueError("Record revision coverage differs")
+            for key, record in records.items():
+                if (
+                    record.id != key
+                    or not 0 <= content["record_revisions"][key] <= revision
+                ):
+                    raise ValueError("Invalid record identity/revision")
+                for target, kind in references(record):
+                    if target not in records or records[target].kind != kind:
+                        raise ValueError("Incomplete record dependency closure")
+            for key, value in content["observations"].items():
+                if not isinstance(records.get(key), Binding):
+                    raise ValueError("Observation lacks binding")
+                BindingObservation.model_validate(value)
+            for key, context in content["validation_context"].items():
+                if not isinstance(records.get(key), Validation) or not isinstance(
+                    context, dict
+                ):
+                    raise ValueError("Validation context lacks validation")
+            for key in content["documents"]:
+                if not isinstance(records.get(key), Document):
+                    raise ValueError("Document evidence lacks document")
+            if set(content["historical_acceptances"]) != {
+                k for k, r in records.items() if isinstance(r, Milestone)
+            }:
+                raise ValueError("Incomplete acceptance history")
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ProjectError(
+                "history_corrupt", "Complete revision materialization failed"
+            ) from exc
+        return dict(content)
 
     @staticmethod
     def _compact(db: sqlite3.Connection, project: Project) -> Project:
@@ -816,6 +950,13 @@ class ProjectStore:
         db.execute(
             "DELETE FROM journal WHERE project_id=? AND revision<=?",
             (project.id, floor),
+        )
+        db.execute(
+            "DELETE FROM revision_states WHERE project_id=? AND revision<? "
+            "AND revision != coalesce((SELECT "
+            "json_extract(data,'$.working_base_revision') "
+            "FROM projects WHERE id=?),-1)",
+            (project.id, floor, project.id),
         )
         return project.model_copy(update={"history_floor": floor})
 
@@ -1148,8 +1289,8 @@ class ProjectStore:
                         ),
                     ),
                 )
-            checkpoint = self._checkpoint(db, project, request, connections or {})
             project = self._compact(db, project)
+            checkpoint = self._checkpoint(db, project, request, connections or {})
             # UPDATE avoids REPLACE's delete/cascade semantics for existing projects.
             db.execute(
                 "UPDATE projects SET data=? WHERE id=?",
@@ -1430,31 +1571,10 @@ class ProjectStore:
         historical: Literal["accepted"] | None = None
         accepted_revision = None
         if isinstance(record, Milestone):
-            accepted_row = db.execute(
-                "SELECT max(revision) FROM ("
-                "SELECT revision FROM milestone_acceptances WHERE "
-                "project_id=? AND milestone_id=? UNION ALL "
-                "SELECT revision FROM journal WHERE project_id=? AND "
-                "kind='milestone' AND id=? AND "
-                "json_extract(data,'$.status')='accepted' AND "
-                "json_extract(data,'$.action') IN ('created','updated'))",
-                (project_id, record.id, project_id, record.id),
-            ).fetchone()
-            accepted_revision = accepted_row[0] if accepted_row else None
-            checkpoint_acceptance = (
-                accepted_revision is None
-                and db.execute(
-                    "SELECT 1 FROM checkpoints c, "
-                    "json_each(c.data,'$.accepted_milestones') a "
-                    "WHERE c.project_id=? AND a.value=? LIMIT 1",
-                    (project_id, record.id),
-                ).fetchone()
+            accepted_revision = self._accepted_revision(
+                db, self.project(db, project_id), record.id
             )
-            if (
-                accepted_revision is not None
-                or checkpoint_acceptance
-                or Milestone.model_validate_json(row["data"]).status == "accepted"
-            ):
+            if accepted_revision is not None or record.status == "accepted":
                 historical = "accepted"
         return RecordView(
             historical_status=historical,

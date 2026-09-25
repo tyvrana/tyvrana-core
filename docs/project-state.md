@@ -177,16 +177,28 @@ it automatically. A hash identifies content; it is not a retrieval mechanism.
 Create named checkpoints at accepted stages, before major restructuring, at a
 handoff or an important downstream boundary. They record semantic revision, stage,
 bounded accepted milestone/document references, validation counts and timestamp.
-They retain the complete working semantic snapshot and available strong document
-evidence. Save first: checkout needs the recorded durable artifact locator and SHA256.
+The semantic authority is the complete immutable state at the checkpoint's revision,
+retained atomically in revision history: project fields, all records, original record
+revision identities, binding observations, validation contexts, historical acceptance,
+and strong document evidence. Accepted milestone lists/counts and validation counts
+are derived summaries, never inputs to checkout. Summaries use the same effective
+freshness and attestation projections as ordinary inspection.
+Save first: checkout needs the checkpoint document state's durable locator and SHA256.
 `project.restore(mode="checkout", checkpoint_id=..., discard_current=true)` replaces
 the active working snapshot, preserving the abandoned head and change history.
 It restores application content only when it differs, using internal trusted proof.
 It never manufactures acceptance or repairs a validation that was stale at creation.
 Checkpoint IDs are immutable. `forget_checkpoints` explicitly removes unused markers.
 
-The current typed records are materialized separately from a compact change journal.
+Current typed records are materialized separately from complete revision snapshots
+and a compact change journal. Checkout restores the exact revision snapshot, including
+failed/stale validations; subsequent validation closure is an ordinary semantic batch.
+Later records and acceptance remain auditable but cannot leak into the new branch.
+Missing full values return `history_incomplete`; invalid identity, dependency closure
+or snapshot checksum returns `history_corrupt`. A retained change label or checkpoint
+summary cannot fill missing values, even when `history_floor` is zero.
 The journal retains at most 256 revisions and 20,000 changes, pruning whole revisions.
+Revision snapshots follow that floor, retaining the active branch's ancestry metadata.
 Named markers survive this pruning. A request older than `history_floor` returns
 `history_expired` with the earliest usable boundary; it never invents an incomplete
 delta. Read current continuation instead. Detailed delta records are current values,

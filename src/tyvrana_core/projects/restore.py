@@ -163,26 +163,20 @@ class TrustedRestore:
         stage = store.project(db, project).stage
         if request.checkpoint_id:
             row = db.execute(
-                "SELECT c.data,s.data FROM checkpoints c JOIN checkpoint_contents s "
-                "ON s.project_id=c.project_id AND s.id=c.id WHERE "
-                "c.project_id=? AND c.id=?",
+                "SELECT data,revision FROM checkpoints WHERE project_id=? AND id=?",
                 (project, request.checkpoint_id),
             ).fetchone()
             if row is None:
                 raise ProjectError(
-                    "restore_target_missing",
-                    "Checkpoint lacks durable restore evidence",
+                    "restore_target_missing", "Checkpoint is unavailable"
                 )
-            marker, snapshot = json.loads(row[0]), json.loads(row[1])
-            if (
-                request.mode == "checkout"
-                and marker["revision"] < store.project(db, project).history_floor
-            ):
+            marker = json.loads(row[0])
+            if marker["revision"] != row[1] or marker["id"] != request.checkpoint_id:
                 raise ProjectError(
-                    "history_expired",
-                    "Checkpoint history is below the retained history floor",
+                    "history_corrupt", "Checkpoint revision identity differs"
                 )
-            stage = marker["stage"]
+            snapshot = store.materialize_revision(db, project, marker["revision"])
+            stage = snapshot["project"]["stage"]
             value = snapshot["documents"].get(request.document_id)
             if value is None:
                 raise ProjectError(
@@ -190,6 +184,22 @@ class TrustedRestore:
                     "Checkpoint lacks a strong document baseline",
                 )
             target = Baseline.model_validate(value)
+            physical = marker["document_states"].get(request.document_id)
+            if physical is None or any(
+                physical.get(field) != getattr(target, field)
+                for field in (
+                    "format",
+                    "digest",
+                    "context_id",
+                    "artifact_sha256",
+                    "artifact_locator",
+                    "application_project_id",
+                )
+            ):
+                raise ProjectError(
+                    "restore_target_mismatch",
+                    "Checkpoint document state differs from revision evidence",
+                )
         else:
             snapshot = None
             value = self.service.continuity.baseline(project, request.document_id)

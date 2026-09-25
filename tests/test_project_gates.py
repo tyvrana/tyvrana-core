@@ -639,7 +639,7 @@ def test_required_checks_inherit_scope_and_criteria_changes_require_revalidation
     assert current(store, key, "b").status == "invalidated"
 
 
-def test_historical_acceptance_uses_existing_journal_and_checkpoint(
+def test_historical_acceptance_uses_revision_history_not_checkpoint_summary(
     contract: tuple[ProjectStore, str],
 ) -> None:
     store, key = contract
@@ -659,4 +659,6 @@ def test_historical_acceptance_uses_existing_journal_and_checkpoint(
         db.execute("DELETE FROM journal WHERE project_id=?", (key,))
     view = store.search(key, SearchInput(ids=["a"])).records[0]
     assert view.historical_status == "accepted"
-    assert view.accepted_revision is None  # Checkpoint proves status, not exact time.
+    assert (
+        view.accepted_revision == accepted_revision
+    )  # Exact revision history survives.

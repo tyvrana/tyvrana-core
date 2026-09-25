@@ -11,6 +11,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -101,9 +102,11 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
             async def tool(
                 name: str, args: dict[str, Any], expected_error: str | None = None
             ) -> Any:
+                started = time.monotonic()
                 response = await client.call_tool(name, args)
                 calls.append(
                     dict(
+                        elapsed_seconds=time.monotonic() - started,
                         tool=name,
                         operation=args.get("operation"),
                         request_bytes=len(
@@ -421,8 +424,8 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                     entity_ids=["rig"],
                     evidence_ids=["foundation_proof"],
                     summary="64 native bones and saved qualified content inspected",
-                    status="passed",
-                    freshness="current",
+                    status="failed",
+                    freshness="stale",
                 )
                 await apply(
                     upsert=[
@@ -442,6 +445,25 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                 saved = await execute(adapter, "blender.document.attest")
                 await check()
                 outcomes["foundation_checkpoint"] = "PASS"
+                # The checkpoint summary can be stale; its revision is authoritative.
+                with sqlite3.connect(state_path / "projects.sqlite3") as db:
+                    db.execute(
+                        "UPDATE checkpoints SET "
+                        "data=json_set(data,'$.accepted_milestones',json('[]'),"
+                        "'$.accepted_count',0) WHERE project_id=? AND id='foundation'",
+                        (key,),
+                    )
+                await apply(
+                    upsert=[
+                        {
+                            **foundation_validation,
+                            "status": "passed",
+                            "freshness": "current",
+                        }
+                    ]
+                )
+                assert revision == base_revision + 1
+                outcomes["revision_plus_one_closure"] = "PASS"
                 await execute(
                     adapter,
                     "blender.object.set_transform",
@@ -532,8 +554,25 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path) -> None:
                     "failed_evidence" not in values
                     and "experiment_failure" not in values
                 )
+                assert values["foundation_check"]["freshness"] == "stale"
+                assert values["foundation_check"]["record"]["status"] == "failed"
+                outcomes["exact_revision_failed_stale"] = "PASS"
+                closed = await apply(
+                    upsert=[
+                        {
+                            **foundation_validation,
+                            "status": "passed",
+                            "freshness": "current",
+                        }
+                    ],
+                    checkpoint=dict(id="closed", label="Qualified foundation closure"),
+                )
+                assert closed["checkpoint"]["accepted_milestones"] == ["M1", "M2"]
+                assert closed["checkpoint"]["accepted_count"] == 2
+                values = {r["record"]["id"]: r for r in (await check())["records"]}
                 assert values["foundation_check"]["freshness"] == "current"
                 assert values["foundation_check"]["record"]["status"] == "passed"
+                outcomes["closure_new_checkpoint"] = "PASS"
                 current = await execute(adapter, "blender.document.attest")
                 assert current["digest"] == saved["digest"]
                 with sqlite3.connect(state_path / "projects.sqlite3") as db:
