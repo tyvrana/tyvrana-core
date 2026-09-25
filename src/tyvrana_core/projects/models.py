@@ -172,6 +172,9 @@ class Project(Model):
     created_at: str
     updated_at: str
     history_floor: int = 0
+    working_base_checkpoint: Key | None = None
+    working_base_revision: int | None = None
+    checkout_revision: int | None = None
 
 
 class ProjectPatch(Model):

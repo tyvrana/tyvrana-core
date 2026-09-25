@@ -614,7 +614,26 @@ trusted baseline. Core selects the durable artifact locator; the adapter owns
 the application-specific guarded open.
 Checkpoints capture immutable content and semantic freshness evidence; a target
 without saved artifact identity, or with changed semantic claims, is rejected.
-The current scope is a single bound document, without semantic graph rebasing.
+The current scope is a single bound document. Default `mode="content"` preserves
+current semantic claims and rejects conflicting checkpoint claims.
+
+To abandon a failed experimental branch, use `mode="checkout"` with
+`checkpoint_id`, `discard_current: true`, the observed `expected_current`, and
+`expected_revision`. This restores the complete checkpoint working snapshot:
+stage, records, dependencies, original validation/binding freshness and attestation.
+It creates one new revision based on the checkpoint, without reaccepting milestones.
+The abandoned head's complete semantic values remain in the retained restore ledger;
+its journal, acceptance receipts and named checkpoints remain auditable. Later records
+are removed from active state, not from that history. Existing stale or failed
+checkpoint claims stay stale or failed. Checkpoints below the history floor reject.
+
+When live strong content, document identity and saved artifact identity already
+match the checkpoint, checkout neither reloads the document nor starts a proof host.
+It reconfirms live state before the atomic semantic commit. Otherwise the existing
+internal proof-host and guarded restore path verifies and loads the trusted artifact.
+Repeated checkout of the already-current checkpoint creates no revision. Save and
+checkpoint before risky work; after abandoning a whole branch, checkout instead of
+manually repairing stale validations. Recovery after machine shutdown is normal.
 
 Restore uses the existing mutation ledger and native job lifecycle. Requests have
 a stable `restore_id`; repeat requests return the original result, and

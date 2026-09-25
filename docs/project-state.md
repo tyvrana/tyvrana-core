@@ -8,13 +8,14 @@ validates, indexes, retrieves and enforces declared prerequisites.
 Application data remains authoritative for geometry, shaders, animation and native
 properties. Semantic state is authoritative for declared goals, relationships,
 progress, issues and validation summaries. Disagreement requires inspection and
-explicit reconciliation. A checkpoint is not an application save or undo state.
+explicit reconciliation. Creating a checkpoint does not save the application file;
+save substantial work first so the checkpoint can be checked out durably.
 
 ## Start and continue
 
 Use the existing `tyvrana_list_operations` and `tyvrana_execute_operation` tools
 with `adapter_id: "core"` (the default). Search summaries before loading selected
-schemas. The seven core operations are:
+schemas. Core project operations include:
 
 | Operation | Purpose |
 | --- | --- |
@@ -23,6 +24,8 @@ schemas. The seven core operations are:
 | `project.search` | Retrieve selected records, project identities or checkpoints |
 | `project.apply` | Commit one coherent semantic batch and optional checkpoint |
 | `project.delta` | Inspect compact changes since a revision or checkpoint |
+| `project.restore` | Restore trusted content or check out a complete checkpoint head |
+| `project.restore_status` | Observe retained restore/checkout work |
 | `project.verify` | Resolve resource bindings through an adapter, recording observations |
 | `project.remove` | Delete only semantic state with explicit identity confirmation |
 
@@ -174,7 +177,12 @@ it automatically. A hash identifies content; it is not a retrieval mechanism.
 Create named checkpoints at accepted stages, before major restructuring, at a
 handoff or an important downstream boundary. They record semantic revision, stage,
 bounded accepted milestone/document references, validation counts and timestamp.
-They contain no duplicate database snapshot and cannot restore application state.
+They retain the complete working semantic snapshot and available strong document
+evidence. Save first: checkout needs the recorded durable artifact locator and SHA256.
+`project.restore(mode="checkout", checkpoint_id=..., discard_current=true)` replaces
+the active working snapshot, preserving the abandoned head and change history.
+It restores application content only when it differs, using internal trusted proof.
+It never manufactures acceptance or repairs a validation that was stale at creation.
 Checkpoint IDs are immutable. `forget_checkpoints` explicitly removes unused markers.
 
 The current typed records are materialized separately from a compact change journal.

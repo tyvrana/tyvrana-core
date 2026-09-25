@@ -76,6 +76,25 @@ without a separate capture/bind/retry sequence. Saving during a downstream stage
 an ordinary guarded operation, not milestone acceptance. Working mutations and named
 checkpoints advance semantic revision; reload/reconnect and exact reattachment do not.
 
+Before risky experimental work, save and create a named working checkpoint. To
+abandon the experiment, use `project.restore(mode="checkout")`, specifying the
+checkpoint, expected revision/current document state and `discard_current=true`.
+This replaces the active semantic snapshot as well as qualifying its document.
+It preserves the abandoned head's full values in the restore ledger and leaves
+the journal and acceptance history intact. `working_base_checkpoint`,
+`working_base_revision` and `checkout_revision` identify the active branch origin.
+Continuation selects the latest checkpoint on that working branch rather than a
+later checkpoint on an abandoned branch. Failed/stale checkpoint validations stay
+failed/stale. No milestone reacceptance or per-binding recovery sequence is needed.
+
+Matching live content and durable file identity take the read-only document fast
+path; differing content uses the existing independent proof and guarded load.
+Both paths atomically establish the snapshot under one new semantic revision.
+An identical already-current checkout does not churn revisions. Normal typed
+authoring, automatic qualification, save and checkpoint then continue, including
+after application restart. Default `mode="content"` retains current semantic
+claims and requires them to match; it is not a branch checkout.
+
 Core observes guarded work with bounded backoff. Work exceeding the 20-second caller
 window returns `mutation_pending` and continues under the original intent; do not
 blindly resubmit it. Shutdown or an unqualified result leaves the intent uncommitted.

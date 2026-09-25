@@ -749,26 +749,7 @@ class ProjectStore:
             "INSERT INTO checkpoints VALUES (?,?,?,?)",
             (project.id, marker.id, project.revision, checkpoint.model_dump_json()),
         )
-        content = {}
-        for table in ("records", "observations", "validation_context"):
-            content[table] = {
-                r[0]: json.loads(r[1])
-                for r in db.execute(
-                    f"SELECT id,data FROM {table} WHERE project_id=?", (project.id,)
-                )
-            }
-        content["documents"] = (
-            {
-                r[0]: json.loads(r[1])
-                for r in db.execute(
-                    "SELECT document_id,data FROM document_attestations "
-                    "WHERE project_id=?",
-                    (project.id,),
-                )
-            }
-            if checkpoint.document_states
-            else {}
-        )
+        content = self.working_snapshot(db, project)
         db.execute(
             "INSERT INTO checkpoint_contents VALUES (?,?,?)",
             (project.id, marker.id, json.dumps(content)),
@@ -785,6 +766,40 @@ class ProjectStore:
             ),
         )
         return checkpoint
+
+    @staticmethod
+    def working_snapshot(db: sqlite3.Connection, project: Project) -> dict[str, Any]:
+        """Complete semantic head; runtime evidence retains its original context."""
+        content: dict[str, Any] = {
+            "project": project.model_dump(mode="json"),
+            "record_revisions": dict(
+                db.execute(
+                    "SELECT id,revision FROM records WHERE project_id=?", (project.id,)
+                )
+            ),
+        }
+        for table in ("records", "observations", "validation_context"):
+            content[table] = {
+                r[0]: json.loads(r[1])
+                for r in db.execute(
+                    f"SELECT id,data FROM {table} WHERE project_id=?", (project.id,)
+                )
+            }
+        content["documents"] = (
+            {
+                r[0]: json.loads(r[1])
+                for r in db.execute(
+                    "SELECT document_id,data FROM document_attestations "
+                    "WHERE project_id=?",
+                    (project.id,),
+                )
+            }
+            if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='document_attestations'"
+            ).fetchone()
+            else {}
+        )
+        return content
 
     @staticmethod
     def _compact(db: sqlite3.Connection, project: Project) -> Project:
@@ -1740,10 +1755,16 @@ class ProjectStore:
             project = self.project(db, project_id)
             marker = db.execute(
                 (
-                    "SELECT data FROM checkpoints WHERE project_id=? ORDER BY "
+                    "SELECT data FROM checkpoints WHERE project_id=? "
+                    "AND (? IS NULL OR id=? OR revision>=?) ORDER BY "
                     "revision DESC LIMIT 1"
                 ),
-                (project_id,),
+                (
+                    project_id,
+                    project.checkout_revision,
+                    project.working_base_checkpoint,
+                    project.checkout_revision,
+                ),
             ).fetchone()
             checkpoint = Checkpoint.model_validate_json(marker[0]) if marker else None
             counts = {

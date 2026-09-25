@@ -13,6 +13,7 @@ from tyvrana_protocol import (
     DocumentRestoreRequest,
     DocumentRestoreTarget,
     DocumentState,
+    ResourceObservation,
 )
 
 from ..errors import AdapterDisconnected, AdapterNotFound
@@ -173,6 +174,14 @@ class TrustedRestore:
                     "Checkpoint lacks durable restore evidence",
                 )
             marker, snapshot = json.loads(row[0]), json.loads(row[1])
+            if (
+                request.mode == "checkout"
+                and marker["revision"] < store.project(db, project).history_floor
+            ):
+                raise ProjectError(
+                    "history_expired",
+                    "Checkpoint history is below the retained history floor",
+                )
             stage = marker["stage"]
             value = snapshot["documents"].get(request.document_id)
             if value is None:
@@ -209,6 +218,12 @@ class TrustedRestore:
         store = self.service.store
         if snapshot is not None:
             records = snapshot["records"]
+            if request.mode == "checkout":
+                return dict(records), {
+                    k
+                    for k, v in records.items()
+                    if v["kind"] == "milestone" and v["status"] == "accepted"
+                }
             for key, saved in records.items():
                 current = store._record(db, project, key).model_dump(mode="json")
                 ignored = (
@@ -292,6 +307,22 @@ class TrustedRestore:
         with self.service.store.transaction() as db:
             target, _, _ = self._target(db, project, request)
         parent = self.service.core.registry.get(request.adapter_id)
+        if request.mode == "checkout":
+            current = await self.service.continuity.observe(parent)
+            if self._state(current) != request.expected_current:
+                raise ProjectError(
+                    "restore_current_changed",
+                    "Discard authorization no longer matches live content",
+                )
+            if (
+                current.project_id == target.application_project_id
+                and current.digest == target.digest
+                and current.format == target.format
+                and current.file_sha256 == target.artifact_sha256
+                and current.file_locator == target.artifact_locator
+            ):
+                await self._restore_proven(project, request, data, None, current)
+                return
         artifact = self.service.proofs.artifact(
             locator=target.artifact_locator,
             sha256=target.artifact_sha256,
@@ -305,7 +336,8 @@ class TrustedRestore:
         project: str,
         request: RestoreInput,
         data: dict[str, Any],
-        proof_host: "AdapterInfo",
+        proof_host: "AdapterInfo | None",
+        observed: DocumentAttestation | None = None,
     ) -> None:
         service, store = self.service, self.service.store
         with store.transaction() as db:
@@ -316,9 +348,10 @@ class TrustedRestore:
             document = store._record(db, project, request.document_id)
         assert isinstance(document, Document)
         live = service.core.registry.get(request.adapter_id)
-        if live.instance_id == proof_host.instance_id or any(
+        if (proof_host and live.instance_id == proof_host.instance_id) or any(
             a.registration.application != document.application
             for a in (live, proof_host)
+            if a is not None
         ):
             raise ProjectError(
                 "restore_lineage",
@@ -328,17 +361,16 @@ class TrustedRestore:
             raise ProjectError(
                 "restore_lineage", "Current host belongs to another project"
             )
-        current = await service.continuity.observe(live)
+        current = observed or await service.continuity.observe(live)
         if self._state(current) != request.expected_current:
             raise ProjectError(
                 "restore_current_changed",
                 "Discard authorization no longer matches live content",
             )
-        proof = await service.continuity.observe(proof_host)
+        proof = await service.continuity.observe(proof_host) if proof_host else current
         if (
-            proof.host_session_id == current.host_session_id
-            or proof.project_id != document.application_project_id
-        ):
+            proof_host is not None and proof.host_session_id == current.host_session_id
+        ) or proof.project_id != document.application_project_id:
             raise ProjectError(
                 "restore_lineage", "Independent proof belongs to another document"
             )
@@ -354,8 +386,25 @@ class TrustedRestore:
         assert target.artifact_sha256 is not None
         assert target.artifact_locator is not None
         resources = service.reconciliation._resources(proof)
+        if request.mode == "checkout" and (
+            proof.resource_scope != target.resource_scope
+            or resources
+            != service.reconciliation._resources(
+                proof.model_copy(
+                    update={
+                        "resources": [
+                            ResourceObservation.model_validate(v)
+                            for v in target.resources
+                        ]
+                    }
+                )
+            )
+        ):
+            raise ProjectError(
+                "restore_incomplete", "Checkpoint resource evidence differs"
+            )
         for value in records.values():
-            if value["kind"] == "binding":
+            if value["kind"] == "binding" and request.mode != "checkout":
                 resource = resources.get((value["resource_kind"], value["resource_id"]))
                 if (
                     resource is None
@@ -436,9 +485,16 @@ class TrustedRestore:
                 )
             data["receipt"] = job.result.model_dump(mode="json")
             self._write(request.restore_id, data)
-        final = await service.continuity.observe(
-            service.core.registry.get(live.instance_id)
-        )
+        final_host = service.core.registry.get(live.instance_id)
+        final = await service.continuity.observe(final_host)
+        if (
+            request.mode == "checkout"
+            and already
+            and self._state(final) != request.expected_current
+        ):
+            raise ProjectError(
+                "restore_current_changed", "Live state changed before checkout commit"
+            )
         if (
             final.host_session_id != current.host_session_id
             or final.project_id != target.application_project_id
@@ -460,6 +516,23 @@ class TrustedRestore:
                     "restore_conflict", "Trusted target changed before restore commit"
                 )
             records, accepted = self._claims(db, project, request, target, snapshot)
+            if request.mode == "checkout":
+                from .checkout import commit_checkout
+
+                assert snapshot is not None
+                commit_checkout(
+                    self,
+                    db,
+                    project,
+                    request,
+                    data,
+                    target,
+                    snapshot,
+                    final,
+                    final_host,
+                )
+                service.attachments[project, document.id] = live.instance_id
+                return
             semantic_changes = not already or stage != state.stage
             for key, value in records.items():
                 record = store._record(db, project, key)

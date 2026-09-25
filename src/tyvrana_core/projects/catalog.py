@@ -47,8 +47,15 @@ DECLARATIONS: dict[
         "verifies strong content before restoring recorded freshness and working head. "
         "No force/trust-current option; no milestone reacceptance. New "
         "hosts may be empty "
-        "or contain the same logical document. One document; unchanged semantic claims "
-        "required. Same restore_id/request observes retained work; use restore_status "
+        "or contain the same logical document. One document. Default mode=content "
+        "requires unchanged semantic claims. To abandon an experimental branch, "
+        "use mode=checkout with checkpoint_id: atomically replace the complete active "
+        "semantic snapshot, preserving the abandoned head and history. Original stale "
+        "claims remain stale; no reacceptance. Exact live digest/artifact identity "
+        "avoids proof-host startup and document reload. Otherwise use the internal "
+        "proof/restore path. Checkout creates one revision based on the checkpoint; "
+        "an already-current checkout creates none. Same restore_id/request observes "
+        "retained work; use restore_status "
         "when running. Already-current targets only reattach without revision churn.",
     ),
     "project.restore_status": (
