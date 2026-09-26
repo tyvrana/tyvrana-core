@@ -432,6 +432,10 @@ class ProjectService:
                         update={"locator": adapter.registration.project_path}
                     )
                 )
+            # Every resource in this document shares the same continuity context.
+            # Refresh it once for the batch, not once per resource (which can
+            # otherwise rehash the entire document for each binding).
+            connections, _ = await self.environment(project_id)
             for binding in selected:
                 obs = by_key[(binding.resource_kind, binding.resource_id)]
                 observations[binding.id] = BindingObservation(
@@ -439,9 +443,7 @@ class ProjectService:
                     name=obs.name,
                     fingerprint=obs.fingerprint,
                     fingerprint_scope=observed.fingerprint_scope,
-                    connection_id=(await self.environment(project_id))[0].get(
-                        document.id, adapter.connection_id
-                    ),
+                    connection_id=connections.get(document.id, adapter.connection_id),
                 )
         for adapter_id, session in checked.items():
             if self.core.registry.get(adapter_id).connection_id != session:

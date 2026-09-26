@@ -3,10 +3,12 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from mcp import Client
 from tyvrana_protocol import (
     AdapterEvent,
     AdapterRegistration,
+    JsonValue,
     OperationContract,
     OperationRequest,
     OperationSuccess,
@@ -17,6 +19,7 @@ from websockets.asyncio.client import connect
 
 from tyvrana_core import AdapterServer, CoreConfig
 from tyvrana_core.mcp import create_mcp_server
+from tyvrana_core.projects.models import ApplicationStatus
 
 from .helpers import FakeAdapter
 from .mcp_helpers import failure
@@ -199,3 +202,139 @@ async def test_portable_inspection_records_missing_and_repair(tmp_path: Path) ->
                     "verified" if state == "present" else "missing"
                 )
                 assert observation["name"] == name
+
+
+async def test_many_bindings_share_document_continuity_check(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    core = AdapterServer(CoreConfig(port=0, state_directory=str(tmp_path)))
+    async with Client(create_mcp_server(core), raise_exceptions=True) as client:
+        project = await core.projects.execute(
+            "project.create", {"title": "Reference set", "goal": "Verify together"}
+        )
+        key = project.model_dump()["id"]
+        bindings: list[dict[str, JsonValue]] = [
+            {
+                "kind": "binding",
+                "id": f"binding-{i}",
+                "label": f"Reference {i}",
+                "entity_id": "set",
+                "document_id": "document",
+                "resource_kind": "reference",
+                "resource_id": f"resource-{i}",
+            }
+            for i in range(40)
+        ]
+        await core.projects.execute(
+            "project.apply",
+            {
+                "project_id": key,
+                "expected_revision": 1,
+                "upsert": [
+                    {"kind": "entity", "id": "set", "label": "Reference set"},
+                    {
+                        "kind": "document",
+                        "id": "document",
+                        "label": "References",
+                        "application": "modeler",
+                        "application_project_id": "reference-document",
+                        "adapter_id": "native",
+                    },
+                    *bindings,
+                ],
+            },
+        )
+        inspector = OperationContract(
+            name="editor.resource.inspect",
+            description="Inspect resources together",
+            effect="read_only",
+            execution="synchronous",
+            arguments_schema=ResourceInspectionRequest.model_json_schema(),
+            result_schema=ResourceInspectionResult.model_json_schema(),
+        )
+        async with connect(core.uri, proxy=None) as websocket:
+            fake = FakeAdapter(websocket)
+            with core.events.subscribe() as events:
+                await fake.send(
+                    AdapterRegistration(
+                        type="adapter.register",
+                        instance_id="native",
+                        application="modeler",
+                        project_id="reference-document",
+                        resource_inspection=inspector.name,
+                        operations=(inspector,),
+                    )
+                )
+                await fake.send(
+                    AdapterEvent(type="adapter.event", event="ready.test", payload=None)
+                )
+                await anext(events)
+            original = core.projects.environment
+            checks = 0
+            lose_continuity = False
+
+            async def environment(
+                project_id: str,
+            ) -> tuple[dict[str, str], list[ApplicationStatus]]:
+                nonlocal checks
+                checks += 1
+                connections, statuses = await original(project_id)
+                if lose_continuity and checks >= 3:
+                    connections = {}
+                return connections, statuses
+
+            monkeypatch.setattr(core.projects, "environment", environment)
+            for revision, expected in [(2, "verified"), (3, "unverified")]:
+                checks = 0
+                lose_continuity = revision == 3
+                pending = asyncio.create_task(
+                    client.call_tool(
+                        "tyvrana_execute_operation",
+                        {
+                            "operation": "project.verify",
+                            "arguments": {
+                                "project_id": key,
+                                "expected_revision": revision,
+                                "binding_ids": [b["id"] for b in bindings],
+                            },
+                        },
+                    )
+                )
+                request = await fake.receive()
+                assert isinstance(request, OperationRequest)
+                arguments = ResourceInspectionRequest.model_validate(request.arguments)
+                assert len(arguments.resources) == 40
+                await fake.send(
+                    OperationSuccess(
+                        type="operation.success",
+                        request_id=request.request_id,
+                        result={
+                            "project_id": "reference-document",
+                            "resources": [
+                                {
+                                    **r.model_dump(mode="json"),
+                                    "state": "present",
+                                    "name": r.resource_id,
+                                    "fingerprint": "unchanged",
+                                }
+                                for r in arguments.resources
+                            ],
+                            "fingerprint_scope": "Reference identity",
+                        },
+                    )
+                )
+                result = await pending
+                assert not result.is_error
+                assert result.structured_content["result"]["counts"] == {
+                    "binding:verified": 40
+                }
+                # Document evidence cost must stay bounded as the set grows;
+                # the final continuity check still invalidates stale bindings.
+                assert checks <= 3
+                recovered = await core.projects.execute(
+                    "project.search",
+                    {"project_id": key, "kind": "binding", "limit": 40},
+                )
+                records = recovered.model_dump()["records"]
+                assert len(records) == 40
+                assert all(r["binding"]["state"] == expected for r in records)
