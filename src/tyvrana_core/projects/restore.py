@@ -308,6 +308,7 @@ class TrustedRestore:
                 state="failed",
                 error_code=code,
                 error_message=message,
+                error_details=exc.details if isinstance(exc, ProjectError) else None,
             ).model_dump()
             self._write(request.restore_id, data)
 
@@ -481,6 +482,8 @@ class TrustedRestore:
                     live.instance_id, operation("document_restore_status"), job.job_id
                 )
             if job.result is None:
+                if job.error is not None:
+                    raise ProjectError.from_operation(job.error)
                 raise ProjectError(
                     job.error.code if job.error else "restore_incomplete",
                     job.error.message if job.error else "Native restore failed",

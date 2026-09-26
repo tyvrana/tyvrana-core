@@ -1,7 +1,7 @@
 """Authored prerequisite contracts, provisional work and selective invalidation."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -134,7 +134,10 @@ def test_prerequisites_persist_and_provisional_work_is_not_acceptance(
                 upsert=[current(store, key, "b").model_copy(update={"status": status})],
             )
         assert error.value.code == "milestone_blocked"
-        assert any(b["record_id"] == "a" for b in error.value.details["blockers"])
+        assert any(
+            b["record_id"] == "a"
+            for b in cast(dict[str, Any], error.value.details)["blockers"]
+        )
         assert store.continuation(key, None, {}, set()) == before
 
 
@@ -171,7 +174,10 @@ def test_required_validation_must_pass_and_be_current(
             ],
             project=ProjectPatch(stage="b"),
         )
-    assert any(b["record_id"] == "qa" for b in error.value.details["blockers"])
+    assert any(
+        b["record_id"] == "qa"
+        for b in cast(dict[str, Any], error.value.details)["blockers"]
+    )
 
 
 def test_existence_or_status_assertion_cannot_pass_evidence_gate(
@@ -192,7 +198,7 @@ def test_existence_or_status_assertion_cannot_pass_evidence_gate(
         )
     assert any(
         b["reason"] == "validation:observations_and_evidence_required"
-        for b in error.value.details["blockers"]
+        for b in cast(dict[str, Any], error.value.details)["blockers"]
     )
     # A declaration cannot omit all checks and still call the milestone accepted.
     with pytest.raises(ProjectError):
@@ -539,7 +545,8 @@ def test_expired_artifact_cannot_support_required_validation(
             ],
         )
     assert any(
-        b["reason"] == "evidence:expired" for b in error.value.details["blockers"]
+        b["reason"] == "evidence:expired"
+        for b in cast(dict[str, Any], error.value.details)["blockers"]
     )
 
 
@@ -622,7 +629,7 @@ def test_required_checks_inherit_scope_and_criteria_changes_require_revalidation
         )
     assert any(
         b["record_id"] == "qa" and b["reason"] == "validation:stale"
-        for b in error.value.details["blockers"]
+        for b in cast(dict[str, Any], error.value.details)["blockers"]
     )
     # Criteria may change provisionally, preserving the need for new evidence.
     apply(

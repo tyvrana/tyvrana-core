@@ -98,8 +98,17 @@ claims and requires them to match; it is not a branch checkout.
 Core observes guarded work with bounded backoff. Work exceeding the 20-second caller
 window returns `mutation_pending` and continues under the original intent; do not
 blindly resubmit it. Shutdown or an unqualified result leaves the intent uncommitted.
-Synchronous artifact-free mutations are supported; adapters reject unsupported nested
-job/artifact contracts before invoking them. This does not retroactively authorize
+Adapters qualify supported nested contracts before invoking them. Blender supports
+synchronous mutations, transferred input artifacts and atomic constructive-form jobs.
+Cooperative jobs recheck the authorized content immediately before publication;
+Core advances the working head once, only after a terminal job and strong receipt.
+The original operation result schema is retained (a completed native job for forms).
+Status and cancellation remain available during preparation. Cancellation cannot
+undo already published work. Output-bearing mutations and unqualified job types
+remain explicitly unsupported. Application failures preserve their code and JSON
+diagnostics through the project wrapper; MCP adds operation context and bounds
+failure details to 16 KiB (an explicit truncation marker replaces oversized data).
+Invalid arguments, invalid geometry and unavailable capabilities remain distinct. This does not retroactively authorize
 content created before mutation tracking or repair an already diverged document.
 
 Historical acceptance comes from durable acceptance entries, journal acceptance events

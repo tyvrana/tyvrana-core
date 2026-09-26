@@ -164,7 +164,9 @@ async def editor(
                             job_id=restore.mutation_id,
                             state="failed",
                             error=dict(
-                                code="file_open_failed", message="Fixture load failed"
+                                code="file_open_failed",
+                                message="Fixture load failed",
+                                details={"stage": "decode", "byte_size": 128},
                             ),
                         )
                     else:

@@ -161,7 +161,9 @@ class WorkingMutations:
                         for b in bindings
                     ],
                 )
-                receipt = await self.guarded(registration, args)
+                receipt = await self.guarded(
+                    registration, args, tuple(a.artifact_id for a in request.artifacts)
+                )
                 if receipt.mutation_id != request.request_id:
                     raise ProjectError(
                         "mutation_receipt_invalid", "Receipt correlation mismatch"
@@ -302,7 +304,10 @@ class WorkingMutations:
                 raise
 
     async def guarded(
-        self, registration: AdapterRegistration, args: DocumentMutationRequest
+        self,
+        registration: AdapterRegistration,
+        args: DocumentMutationRequest,
+        artifact_ids: tuple[str, ...] = (),
     ) -> DocumentMutationResult:
         mutations = [
             c for c in registration.operations if "document_mutation" in c.tags
@@ -322,6 +327,7 @@ class WorkingMutations:
             adapter_id=registration.instance_id,
             operation=mutations[0].name,
             arguments=args.model_dump(mode="json"),
+            artifact_ids=artifact_ids,
             _internal=True,
         )
         job = DocumentMutationJob.model_validate(response.result)
@@ -348,6 +354,8 @@ class WorkingMutations:
                 job = DocumentMutationJob.model_validate(response.result)
                 delay = min(2.0, delay * 1.5)
         if job.state != "completed" or job.result is None:
+            if job.error is not None:
+                raise ProjectError.from_operation(job.error)
             raise ProjectError(
                 job.error.code if job.error else "mutation_incomplete",
                 job.error.message if job.error else "Native mutation did not complete",

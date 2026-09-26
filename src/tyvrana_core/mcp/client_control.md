@@ -18,10 +18,23 @@ inspectable in that window. Renders supplement visible editor progress. Window p
 Non-authoritative observation/window management must not mutate project/editor
 state.
 
-Missing capability or excessive low-level calls for one intent means
-TYVRANA TOOLING GAP. Discover alternate terms first; in authorized development,
-improve the reusable tool; otherwise report unsupported work. Do not assume
-source-development permission or bypass the adapter to finish.
+Discover from semantic intent, then compare suitable representations and downstream
+ownership: shells for thin patches/openings, section lofts for shafts, constructive
+volumes for fused branches/recesses, assemblies for related parts. Refine through
+named controls while generated data is pristine; downstream mesh/sculpt edits may
+prevent regeneration. Retessellation is not production deformation topology.
+
+A failed construction alone is not a missing capability. Read code, operation and
+structured diagnostics: invalid_arguments needs request correction; geometric
+rejection needs a localized contour/scale/feature correction or another suitable
+advertised representation. Reinspect stale revisions/content/bindings and restore
+valid project state before editing. Unsupported capability differs from internal
+operation/job failure; preserve evidence of either. Inspect partial outcomes before
+retrying. Prefer one evidence-led correction over blind repetition.
+Only demonstrated inability to express intent, broken contracts, or excessive
+low-level work for one intent means TYVRANA TOOLING GAP. Search alternate semantic
+terms/families first. In authorized development improve the reusable tool; otherwise
+report the specific unsupported work. Do not bypass the adapter or assume source-development permission.
 
 API success is not task success. Inspect a baseline; change -> inspect/run/render
 -> detect issues -> fix -> verify. For real-world correctness, research authoritative

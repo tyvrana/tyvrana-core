@@ -37,6 +37,7 @@ from ..errors import (
     OperationTimeout,
     RemoteOperationError,
     UnsupportedOperation,
+    bounded_diagnostics,
 )
 from ..projects.catalog import CATALOG_SHA256, CONTRACTS
 from ..projects.models import ProjectRevision
@@ -363,7 +364,7 @@ def _failure(
 ) -> CallToolResult:
     error: dict[str, JsonValue] = {"code": code, "message": message}
     if details is not None:
-        error["details"] = details
+        error["details"] = bounded_diagnostics(details)
     if operation is not None:
         error["operation"] = operation
     return CallToolResult(
@@ -715,7 +716,12 @@ async def call_tool(
             request.artifact_delivery,
         )
     except ProjectError as exc:
-        return _failure(exc.code, str(exc), exc.details)
+        return _failure(
+            exc.code,
+            str(exc),
+            exc.details,
+            request.operation if isinstance(request, ExecuteOperationInput) else None,
+        )
     except ValidationError as exc:
         return _failure(
             "invalid_arguments",

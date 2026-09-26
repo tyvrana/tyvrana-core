@@ -3,7 +3,7 @@
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
-from tyvrana_protocol import DocumentState
+from tyvrana_protocol import DocumentState, JsonValue
 
 from .models import Key, Model, ProjectInput
 
@@ -49,3 +49,4 @@ class RestoreResult(Model):
     poll_after_seconds: float = 2.0
     error_code: str | None = None
     error_message: str | None = None
+    error_details: JsonValue = None

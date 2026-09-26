@@ -126,6 +126,11 @@ async def test_guarded_restore(tmp_path: Path, case: str, code: str | None) -> N
                 assert result["state"] == "failed" and result["error_code"] == code, (
                     result
                 )
+                if case == "load":
+                    assert result["error_details"] == {
+                        "stage": "decode",
+                        "byte_size": 128,
+                    }
                 assert core.projects.continuity.baseline(key, "doc") == head
                 if case not in {"load", "post"}:
                     assert not calls and native == before

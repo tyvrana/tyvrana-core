@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+from tyvrana_protocol import JsonValue, ProtocolError
+
+from ..errors import bounded_diagnostics
 from .attestation_migration import verified_projection
 from .gates import MilestoneGates
 from .models import (
@@ -54,7 +57,14 @@ class ProjectError(Exception):
     def __init__(self, code: str, message: str, **details: Any) -> None:
         super().__init__(message)
         self.code = code
-        self.details = details
+        self.details: JsonValue = details
+
+    @classmethod
+    def from_operation(cls, error: ProtocolError) -> "ProjectError":
+        """Retain the application failure without interpreting its JSON payload."""
+        result = cls(error.code, error.message)
+        result.details = bounded_diagnostics(error.details)
+        return result
 
 
 def now() -> str:

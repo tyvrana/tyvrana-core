@@ -62,7 +62,7 @@ def assert_workflow_guidance(instructions: str) -> None:
     assert "review closeups, refine local shape and compare" in guidance
     assert "perspective evidence stays qualitative" in guidance
     assert "independent visual review packet" in guidance
-    assert len(instructions.encode()) < 6600
+    assert len(instructions.encode()) < 8000
     assert "Examples, when relevant:" not in instructions
     for benchmark in ("mallard", "duck", "greyhound"):
         assert benchmark not in guidance

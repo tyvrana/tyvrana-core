@@ -4,6 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -202,7 +203,7 @@ def test_concurrent_writers_conflict_delta_and_one_retry(store: ProjectStore) ->
             return "success"
         except ProjectError as exc:
             assert exc.code == "revision_conflict"
-            assert exc.details["current_revision"] == 3
+            assert cast(dict[str, Any], exc.details)["current_revision"] == 3
             return "conflict"
 
     with ThreadPoolExecutor(max_workers=2) as executor:

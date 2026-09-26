@@ -1,6 +1,8 @@
 """Failures that core callers can handle without parsing log messages."""
 
-from tyvrana_protocol import ProtocolError
+import json
+
+from tyvrana_protocol import JsonValue, ProtocolError
 
 
 class CoreError(Exception):
@@ -54,3 +56,11 @@ class InvalidAdapterBehavior(CoreError):
 
 class EventSubscriptionOverflow(CoreError):
     """A subscriber fell behind and must explicitly resubscribe."""
+
+
+def bounded_diagnostics(details: JsonValue) -> JsonValue:
+    """Keep valid JSON evidence or explicitly mark an oversized diagnostic."""
+    encoded = json.dumps(details, ensure_ascii=False, allow_nan=False)
+    if len(encoded.encode()) <= 16384:
+        return details
+    return {"diagnostics_truncated": True, "byte_limit": 16384}
