@@ -18,7 +18,7 @@ from tyvrana_protocol.mutations import (
 
 from ..errors import AdapterDisconnected, AdapterNotFound
 from .continuity import AttestInput, Baseline
-from .models import Binding, Change
+from .models import Binding, Change, MutationStatus, MutationStatusInput
 from .store import ProjectError, now
 
 if TYPE_CHECKING:
@@ -29,12 +29,52 @@ class WorkingMutations:
     def __init__(self, service: "ProjectService") -> None:
         self.service = service
         self.lock = asyncio.Lock()
-        self.tasks: set[asyncio.Task[OperationSuccess]] = set()
+        self.tasks: dict[str, tuple[str, asyncio.Task[OperationSuccess]]] = {}
 
     async def shutdown(self) -> None:
-        for task in self.tasks:
+        tasks = [task for _, task in self.tasks.values()]
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def status(
+        self, project_id: str, request: MutationStatusInput
+    ) -> MutationStatus:
+        active = self.tasks.get(request.mutation_id)
+        if active is not None and active[0] == project_id and request.wait_seconds:
+            # Waiting/caller cancellation never cancels the authorized mutation.
+            await asyncio.wait({active[1]}, timeout=request.wait_seconds)
+        with self.service.store.transaction() as db:
+            row = db.execute(
+                "SELECT document_id,data FROM document_mutations "
+                "WHERE id=? AND project_id=?",
+                (request.mutation_id, project_id),
+            ).fetchone()
+        active = self.tasks.get(request.mutation_id)
+        running = (
+            active is not None and active[0] == project_id and not active[1].done()
+        )
+        if row is None:
+            if running:
+                return MutationStatus(
+                    project_id=project_id,
+                    mutation_id=request.mutation_id,
+                    state="pending",
+                )
+            raise ProjectError("mutation_not_found", "No mutation in this project")
+        intent = json.loads(row[1])
+        state = intent["state"]
+        if state == "pending" and not running:
+            state = "interrupted"
+        return MutationStatus(
+            project_id=project_id,
+            mutation_id=request.mutation_id,
+            state=state,
+            document_id=row[0],
+            operation=intent["operation"],
+            revision=intent["revision"] if state == "completed" else None,
+            error_code=intent.get("error_code"),
+        )
 
     async def execute(
         self, registration: AdapterRegistration, request: OperationRequest, limit: float
@@ -48,19 +88,73 @@ class WorkingMutations:
             return None
         if not any("document_attestation" in c.tags for c in registration.operations):
             return None
+        document = next(
+            d
+            for d in self.service.store.documents(project.id)
+            if d.application == registration.application
+            and d.application_project_id == registration.project_id
+        )
+        with self.service.store.transaction(write=True) as db:
+            db.execute(
+                "INSERT INTO document_mutations VALUES (?,?,?,?)",
+                (
+                    request.request_id,
+                    project.id,
+                    document.id,
+                    json.dumps(
+                        dict(
+                            state="pending",
+                            operation=request.operation,
+                            stage=project.stage,
+                            revision=project.revision,
+                            before=None,
+                            after=None,
+                        )
+                    ),
+                ),
+            )
         task = asyncio.create_task(self._execute(registration, request, project.id))
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
-        # Drain exceptions even if the original caller has left after a pending result.
-        task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+        self.tasks[request.request_id] = (project.id, task)
+
+        def finished(completed: asyncio.Task[OperationSuccess]) -> None:
+            self.tasks.pop(request.request_id, None)
+            error = "cancelled" if completed.cancelled() else completed.exception()
+            if error is None:
+                return
+            # Retain failures before native dispatch too (for example queued work
+            # whose document becomes unavailable). Never downgrade a committed row.
+            with self.service.store.transaction(write=True) as db:
+                row = db.execute(
+                    "SELECT data FROM document_mutations WHERE id=?",
+                    (request.request_id,),
+                ).fetchone()
+                if row is None:
+                    return
+                intent = json.loads(row[0])
+                if intent["state"] != "completed":
+                    intent.update(
+                        state="uncommitted",
+                        error_code="cancelled"
+                        if completed.cancelled()
+                        else getattr(error, "code", type(error).__name__),
+                    )
+                    db.execute(
+                        "UPDATE document_mutations SET data=? WHERE id=?",
+                        (json.dumps(intent), request.request_id),
+                    )
+
+        task.add_done_callback(finished)
         try:
             async with asyncio.timeout(min(20.0, limit)):
                 return await asyncio.shield(task)
         except TimeoutError:
             raise ProjectError(
                 "mutation_pending",
-                "Guarded work continues; observe the working project",
+                "Guarded work continues; observe project.mutation_status. "
+                "Do not resubmit the mutation.",
                 mutation_id=request.request_id,
+                project_id=project.id,
+                status_operation="project.mutation_status",
             ) from None
 
     async def _execute(
@@ -141,8 +235,8 @@ class WorkingMutations:
             )
             with store.transaction(write=True) as db:
                 db.execute(
-                    "INSERT INTO document_mutations VALUES (?,?,?,?)",
-                    (request.request_id, project_id, document.id, json.dumps(intent)),
+                    "UPDATE document_mutations SET data=? WHERE id=?",
+                    (json.dumps(intent), request.request_id),
                 )
             try:
                 args = DocumentMutationRequest(

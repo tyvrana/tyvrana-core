@@ -98,6 +98,11 @@ claims and requires them to match; it is not a branch checkout.
 Core observes guarded work with bounded backoff. Work exceeding the 20-second caller
 window returns `mutation_pending` and continues under the original intent; do not
 blindly resubmit it. Shutdown or an unqualified result leaves the intent uncommitted.
+The reply identifies `project.mutation_status`, the project and the mutation.
+Observe that durable receipt with an optional bounded wait; a disconnected caller
+does not cancel the retained task. Terminal `completed` means a qualified Core
+commit, while `uncommitted` or `interrupted` requires inspecting native state before
+recovery. These states do not supply an operation result or an acceptance judgment.
 Adapters qualify supported nested contracts before invoking them. Blender supports
 synchronous mutations, transferred input artifacts and atomic constructive-form jobs.
 Cooperative jobs recheck the authorized content immediately before publication;

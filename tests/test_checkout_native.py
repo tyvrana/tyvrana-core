@@ -522,19 +522,14 @@ async def test_packaged_checkpoint_checkout(tmp_path: Path, repetition: int) -> 
                         ),
                     ],
                 )
-                # Reproduce the failure input: native open succeeds, but ordinary
-                # mutation qualification rejects the changed document session.
-                # Checkout below must recover without trusting that failed receipt.
-                await tool(
-                    "tyvrana_execute_operation",
-                    dict(
-                        adapter_id=adapter,
-                        operation="blender.file.open",
-                        arguments=dict(
-                            filepath=str(foundation_path), discard_current=True
-                        ),
-                    ),
-                    expected_error="mutation_unqualified",
+                # A lifecycle open succeeds but changes the loaded document session.
+                # Historical claims remain unverified until qualified recovery;
+                # successful file loading alone does not restore current trust.
+                await execute(
+                    adapter,
+                    "blender.file.open",
+                    filepath=str(foundation_path),
+                    discard_current=True,
                 )
                 current = await execute(adapter, "blender.document.attest")
                 assert current["digest"] == saved["digest"]

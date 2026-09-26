@@ -25,6 +25,7 @@ from .models import (
     CreateInput,
     DeltaInput,
     Document,
+    MutationStatusInput,
     ProjectPatch,
     RemoveInput,
     RemoveResult,
@@ -164,6 +165,7 @@ class ProjectService:
                     DeltaInput,
                     SearchInput,
                     VerifyInput,
+                    MutationStatusInput,
                     RemoveInput,
                     AttestInput,
                     AttestStatusInput,
@@ -178,6 +180,8 @@ class ProjectService:
                 for a in self.core.registry.list()
             }
             project_id = self.store.select(request.project_id, connected)
+            if isinstance(request, MutationStatusInput):
+                return await self.mutations.status(project_id, request)
             if operation.endswith("_cancel"):
                 owner: Continuity | TrustedRestore | Reconciliation
                 if isinstance(request, AttestStatusInput):
@@ -215,9 +219,31 @@ class ProjectService:
                 return await self._verify(project_id, request)
             if isinstance(request, ApplyInput):
                 # Include documents being established in this same coherent batch.
+                existing = {d.id: d for d in self.store.documents(project_id)}
                 for record in request.upsert:
                     if isinstance(record, Document):
+                        previous = existing.get(record.id)
+                        if previous is not None and (
+                            previous.application,
+                            previous.application_project_id,
+                            previous.adapter_id,
+                        ) == (
+                            record.application,
+                            record.application_project_id,
+                            record.adapter_id,
+                        ):
+                            # Metadata does not replace the freshly resolved strong
+                            # context, including an unavailable document's absence.
+                            continue
                         connections.pop(record.id, None)
+                        if self.continuity.baseline(project_id, record.id) is not None:
+                            resolved = await self.continuity.resolve(project_id, record)
+                            if (
+                                resolved
+                                and resolved[0].instance_id == record.adapter_id
+                            ):
+                                connections[record.id] = resolved[1]
+                            continue
                         matches = [
                             a
                             for a in self.core.registry.list()

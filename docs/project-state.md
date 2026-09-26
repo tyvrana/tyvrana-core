@@ -27,6 +27,7 @@ schemas. Core project operations include:
 | `project.restore` | Restore trusted content or check out a complete checkpoint head |
 | `project.restore_status` | Observe retained restore/checkout work |
 | `project.verify` | Resolve resource bindings through an adapter, recording observations |
+| `project.mutation_status` | Observe a pending guarded mutation without replaying it |
 | `project.remove` | Delete only semantic state with explicit identity confirmation |
 
 A fresh client should retrieve continuation, inspect critical open or stale state,
@@ -117,11 +118,37 @@ writes roll back on recovery. No distributed consensus or cloud collaboration is
 
 ## Freshness and evidence
 
+Validation `status` is the authored result (`passed`, `failed`, `warning`, or
+`unknown`); `freshness` is its current applicability. A pending external review
+remains `unknown` even when its freshness is `current`. Neither binding verification
+nor document reattachment supplies a missing judgment or accepts a milestone.
+
+Checkpoint summaries explicitly have `scope: "historical"`. Their validation counts
+describe the checkpoint revision, not trust in the application now. Continuation
+and search record views project current freshness while retaining the result. A
+historical passed/current checkpoint and a live passed/unverified validation can
+legitimately coexist after a document becomes unavailable. They must agree when
+the verification context and dependencies have not changed. Updating a document's
+label, summary or locator preserves that context; metadata is not verification.
+
+Non-current validation and unverified/stale binding views include a compact
+`freshness_reason`: `not_verified` means no current verification was established;
+`document_unverified` means the recorded context is unavailable or no longer
+matches; `dependencies_changed` means affected authored dependencies changed.
+Inspect application/document identity and content before recovery. For an exact
+strong document match, `project.attest(mode="reattach")` can restore its context
+without reacceptance. For unverified resource identities, use `project.verify`.
+Changed content/dependencies require inspection and explicit revalidation;
+verifying identity alone does not make a stale validation current. Historical
+acceptance remains recorded even when its live prerequisite view is invalidated.
+
 Binding `verified` means that the saved identity uniquely exists in the checked
 runtime. It is not geometry, appearance, animation or engineering acceptance.
 Read-only inspection may also report missing, ambiguous or unsupported resources.
-A new connection generation or unavailable runtime makes prior observations
-unverified. Verification checks exactly the requested document/resource IDs.
+An unavailable document context makes prior observations unverified. Strong
+document continuity can preserve that context across transport reconnects;
+unattested documents depend on the connection generation. Verification checks
+exactly the requested document/resource IDs.
 Adapter fingerprints describe their scope; they are not whole-scene hashes.
 
 For a bound document, Core checks the active milestone immediately before dispatching
@@ -256,3 +283,21 @@ document metadata after saving. Core observes registry changes and resumes only
 read-only status retrieval for the same job and adapter within the existing
 deadline. It never resubmits the mutation. Completed receipts still require exact
 host/document/project identity and content evidence before semantic commit.
+
+For a `mutation_pending` reply, use its `project_id` and `mutation_id` with
+`project.mutation_status`. The read-only operation can wait up to 20 seconds on the
+existing task; cancelling that wait does not cancel the mutation. `completed`
+reports a qualified Core commit and its revision, not current visual acceptance.
+`uncommitted` reports failure to commit; `interrupted` means a durable pending
+intent has no surviving task, for example after a process interruption. Inspect
+actual application state before recovery: native changes may exist without a Core
+commit. Never blindly resubmit. Terminal state survives Core restart; an available
+`error_code` identifies failure, but historical intents may lack that diagnostic.
+Use domain inspection for original output details; this operation retains no
+original operation result and makes no application calls.
+
+Registry waits observe registration changes, not mutation completion. Check the
+required adapter/document/path predicate first; wait from the observed revision
+only while that predicate is unsatisfied. A save to the existing path or reopening
+the same path need not change the catalog or registry metadata. Strong document
+verification still distinguishes a new load from an unchanged registration.

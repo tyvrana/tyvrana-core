@@ -1527,6 +1527,10 @@ class ProjectStore:
             record = record.model_copy(update={"status": "accepted"})
         binding = None
         freshness = None
+        freshness_reason: (
+            Literal["not_verified", "dependencies_changed", "document_unverified"]
+            | None
+        ) = None
         availability: Literal["available", "expired", "unverified"] | None = None
         if (
             isinstance(record, Milestone)
@@ -1553,8 +1557,19 @@ class ProjectStore:
                 or not binding.connection_id
             ):
                 binding = binding.model_copy(update={"state": "unverified"})
+                freshness_reason = "document_unverified" if observed else "not_verified"
+            elif binding.state in {"stale", "unverified"}:
+                freshness_reason = (
+                    "dependencies_changed"
+                    if binding.state == "stale"
+                    else "not_verified"
+                )
         if isinstance(record, Validation):
             freshness = "current" if migrated else record.freshness
+            if freshness != "current":
+                freshness_reason = (
+                    "dependencies_changed" if freshness == "stale" else "not_verified"
+                )
             context_row = db.execute(
                 "SELECT data FROM validation_context WHERE project_id=? AND id=?",
                 (project_id, record.id),
@@ -1569,6 +1584,7 @@ class ProjectStore:
                 )
             ):
                 freshness = "unverified"
+                freshness_reason = "document_unverified"
             record = record.model_copy(update={"freshness": freshness})
         if isinstance(record, Evidence):
             availability = "unverified"
@@ -1593,6 +1609,7 @@ class ProjectStore:
             changed_revision=row["revision"],
             binding=binding,
             freshness=freshness,
+            freshness_reason=freshness_reason,
             evidence_availability=availability,
         )
 

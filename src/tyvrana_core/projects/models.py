@@ -191,6 +191,10 @@ class CheckpointInput(Model):
 
 
 class Checkpoint(CheckpointInput):
+    scope: Literal["historical"] = Field(
+        default="historical",
+        description="Counts describe this checkpoint revision, not current live trust.",
+    )
     document_states: dict[str, dict[str, str]] = Field(default_factory=dict)
     revision: int
     stage: Stage
@@ -212,6 +216,21 @@ class ProjectInput(Model):
         default=None,
         description="Omit only when one connected/stored project is unambiguous.",
     )
+
+
+class MutationStatusInput(ProjectInput):
+    mutation_id: Key
+    wait_seconds: float = Field(default=0, ge=0, le=20, allow_inf_nan=False)
+
+
+class MutationStatus(Model):
+    project_id: Key
+    mutation_id: Key
+    state: Literal["pending", "completed", "uncommitted", "interrupted"]
+    document_id: Key | None = None
+    operation: str | None = None
+    revision: int | None = None
+    error_code: str | None = None
 
 
 class ApplyInput(ProjectInput):
@@ -313,6 +332,13 @@ class RecordView(Model):
         default=None, exclude_if=lambda v: v is None
     )
     freshness: Freshness | None = Field(default=None, exclude_if=lambda v: v is None)
+    freshness_reason: (
+        Literal["not_verified", "dependencies_changed", "document_unverified"] | None
+    ) = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="Why validation freshness or binding verification is not current.",
+    )
     evidence_availability: Literal["available", "expired", "unverified"] | None = Field(
         default=None, exclude_if=lambda v: v is None
     )

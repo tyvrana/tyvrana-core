@@ -16,6 +16,8 @@ from .models import (
     CreateInput,
     Delta,
     DeltaInput,
+    MutationStatus,
+    MutationStatusInput,
     Project,
     RemoveInput,
     RemoveResult,
@@ -34,6 +36,18 @@ class AttestResponse(RootModel[AttestResult | AttestJob]):
 DECLARATIONS: dict[
     str, tuple[type[BaseModel], type[BaseModel], Literal["read_only", "mutating"], str]
 ] = {
+    "project.mutation_status": (
+        MutationStatusInput,
+        MutationStatus,
+        "read_only",
+        "Observe a mutation_pending receipt using its mutation_id and project_id. "
+        "Optionally wait up to 20 seconds without polling or cancelling the work. "
+        "Completed means Core committed the qualified receipt at revision, not "
+        "artistic acceptance or fresh inspection. Uncommitted/interrupted means "
+        "no qualified commit: inspect actual application state before recovery; "
+        "never blindly replay the mutation. No original operation result is retained "
+        "here; use its domain inspection for output details. No application calls.",
+    ),
     "project.restore": (
         RestoreInput,
         RestoreResult,
@@ -174,6 +188,11 @@ DECLARATIONS: dict[
             "before acting; retrieve targeted project.search details only as "
             "needed. Application geometry stays authoritative in its "
             "application."
+            " Checkpoint scope is historical; record freshness is live. "
+            "freshness_reason distinguishes missing verification, document context "
+            "loss and changed dependencies. Exact strong reattachment can restore "
+            "document trust; identity verification alone cannot revalidate changed "
+            "content. Historical acceptance is retained, not re-created."
         ),
     ),
     "project.search": (
@@ -246,13 +265,14 @@ DECLARATIONS: dict[
             "applications. Matches saved document UUID and stable resource "
             "IDs, not names/paths. Renames update observed name. Present "
             "identities become verified; absent/duplicate/unsupported IDs "
-            "are explicit. Disconnection/reconnection makes old observations "
-            "unverified; observed application writes stale bindings and "
-            "validations. Changed fingerprints or connection generations "
-            "stale related validation. Fingerprints cover only the adapter's "
+            "are explicit. Unavailable document context makes old observations "
+            "unverified; strong continuity preserves trust through transport "
+            "reconnect. New hosts/loads require exact project.attest reattachment. "
+            "Changed fingerprints or untrusted contexts stale related validation. "
+            "Fingerprint coverage is limited to the adapter's "
             "declared scope; verification is not geometric/visual/behavioral "
-            "acceptance. Inspection uses the document's pinned adapter_id; "
-            "rebind the document explicitly to change runtime. A "
+            "acceptance. Inspection uses the verified attachment or pinned adapter; "
+            "an adapter_id assertion cannot override it. A "
             "revision or connection change during inspection rejects the "
             "whole write; retry after inspecting delta."
         ),
