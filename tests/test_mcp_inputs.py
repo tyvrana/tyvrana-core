@@ -184,7 +184,7 @@ async def test_cancelled_mcp_import_cleans_partial_file(tmp_path: Path) -> None:
 
 
 async def test_batch_import_order_rollback_and_release(tmp_path: Path) -> None:
-    files = [local_file(tmp_path, bytes([i]), f"input{i}.bin") for i in range(8)]
+    files = [local_file(tmp_path, bytes([i]), f"input{i}.bin") for i in range(64)]
     async with session() as (core, client):
         result = await client.call_tool(
             "tyvrana_import_artifact",
@@ -196,17 +196,17 @@ async def test_batch_import_order_rollback_and_release(tmp_path: Path) -> None:
         )
         assert not result.is_error
         descriptors = result.structured_content["artifacts"]
-        assert [d["name"] for d in descriptors] == [f"Label{i}" for i in range(8)]
+        assert [d["name"] for d in descriptors] == [f"Label{i}" for i in range(64)]
         assert [d["sha256"] for d in descriptors] == [
-            hashlib.sha256(bytes([i])).hexdigest() for i in range(8)
+            hashlib.sha256(bytes([i])).hexdigest() for i in range(64)
         ]
-        assert len({d["artifact_id"] for d in descriptors}) == 8
+        assert len({d["artifact_id"] for d in descriptors}) == 64
         failed = await client.call_tool(
             "tyvrana_import_artifact",
             {"files": [{"path": str(files[0])}, {"path": str(tmp_path / "absent")}]},
         )
         assert failure(failed)["details"] == {"item_index": 1}
-        assert core.artifacts.entry_count == 8
+        assert core.artifacts.entry_count == 64
         identifiers = [d["artifact_id"] for d in descriptors]
         for expected in (True, False):
             released = await client.call_tool(
@@ -223,7 +223,7 @@ async def test_batch_import_order_rollback_and_release(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "files", [[], [{"path": "x"}] * 9, None, [{"path": "x" * 4097}]]
+    "files", [[], [{"path": "x"}] * 65, None, [{"path": "x" * 4097}]]
 )
 async def test_import_batch_bounds(files: object) -> None:
     async with session() as (core, client):

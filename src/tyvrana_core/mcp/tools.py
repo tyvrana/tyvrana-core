@@ -203,7 +203,7 @@ class ImportArtifactFile(_ToolModel):
 
 
 class ImportArtifactInput(_ToolModel):
-    files: list[ImportArtifactFile] = Field(min_length=1, max_length=8)
+    files: list[ImportArtifactFile] = Field(min_length=1, max_length=64)
 
 
 class ImportArtifactOutput(_ToolModel):
@@ -334,7 +334,7 @@ async def list_tools(
             Tool(
                 name="tyvrana_import_artifact",
                 description=(
-                    "Atomically import 1..8 local regular files into core-owned "
+                    "Atomically import 1..64 local regular files into core-owned "
                     "temporary storage. "
                     "The path is local to core and never sent to adapters. "
                     "Adapters receive artifact bytes, not the source path. Returns "

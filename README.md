@@ -233,11 +233,12 @@ to use, but contain no source path or embedded bytes:
 Input and output attachments are independent; input descriptors are not echoed
 as output artifacts.
 
-`tyvrana_import_artifact` atomically imports `files`, a list of 1..8 entries
+`tyvrana_import_artifact` atomically imports `files`, a list of 1..64 entries
 with required `path`, optional `name`, and optional `media_type`. It returns
 `{"artifacts": [...]}` with ordered descriptors (`artifact_id`, `name`,
 `media_type`, `byte_size`, `sha256`). A single file uses the same list contract.
-Use batches for reference sets; attach up to eight returned IDs per operation.
+Import a complete bounded manifest, then attach up to eight returned IDs per
+adapter operation. Intake cardinality is independent of the attachment limit.
 If any item fails or the call is cancelled, all imports from that call are
 released; existing artifacts are preserved. Import errors identify `item_index`.
 Each path is bounded to 4096 characters; store byte/entry quotas still apply.
