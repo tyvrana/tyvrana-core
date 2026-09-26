@@ -189,8 +189,8 @@ class ExecuteOperationInput(_ToolModel):
         return value
 
 
-class ImportArtifactInput(_ToolModel):
-    path: str = Field(min_length=1)
+class ImportArtifactFile(_ToolModel):
+    path: str = Field(min_length=1, max_length=4096)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     media_type: str | None = Field(default=None, min_length=3, max_length=127)
 
@@ -202,12 +202,32 @@ class ImportArtifactInput(_ToolModel):
         return value
 
 
+class ImportArtifactInput(_ToolModel):
+    files: list[ImportArtifactFile] = Field(min_length=1, max_length=8)
+
+
+class ImportArtifactOutput(_ToolModel):
+    artifacts: list[ArtifactDescriptor]
+
+
 class ReleaseArtifactInput(_ToolModel):
+    artifact_ids: list[ArtifactId] = Field(min_length=1, max_length=64)
+
+    @field_validator("artifact_ids")
+    @classmethod
+    def unique(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("Artifact IDs must be unique")
+        return value
+
+
+class ReleasedArtifact(_ToolModel):
     artifact_id: ArtifactId
+    released: bool
 
 
 class ReleaseArtifactOutput(_ToolModel):
-    released: bool
+    artifacts: list[ReleasedArtifact]
 
 
 class ExportArtifactInput(_ToolModel):
@@ -314,14 +334,17 @@ async def list_tools(
             Tool(
                 name="tyvrana_import_artifact",
                 description=(
-                    "Copy a local regular file into core-owned temporary storage. "
+                    "Atomically import 1..8 local regular files into core-owned "
+                    "temporary storage. "
                     "The path is local to core and never sent to adapters. "
                     "Adapters receive artifact bytes, not the source path. Returns "
-                    "a reusable artifact descriptor whose ID can be attached to "
-                    "operations; release it when finished."
+                    "ordered reusable artifact descriptors to attach to "
+                    "operations in batches; release them when finished. A failed or "
+                    "cancelled item releases all new imports; existing artifacts "
+                    "are preserved."
                 ),
                 input_schema=ImportArtifactInput.model_json_schema(),
-                output_schema=ArtifactDescriptor.model_json_schema(
+                output_schema=ImportArtifactOutput.model_json_schema(
                     mode="serialization"
                 ),
             ),
@@ -340,7 +363,7 @@ async def list_tools(
             Tool(
                 name="tyvrana_release_artifact",
                 description=(
-                    "Release a core-owned temporary artifact by ID when it is no "
+                    "Release 1..64 core-owned temporary artifacts by ID when no "
                     "longer needed. Idempotent; new uses are prevented, while "
                     "already admitted transfers retain their bytes until finished."
                 ),
@@ -677,17 +700,35 @@ async def call_tool(
                 )
             )
         if isinstance(request, ImportArtifactInput):
+            descriptors: list[ArtifactDescriptor] = []
             try:
-                descriptor = await core.artifacts.import_file(
-                    request.path, name=request.name, media_type=request.media_type
-                )
-            except ArtifactError as exc:
-                return _failure("artifact_import_failed", str(exc))
-            return _success(descriptor)
+                for item in request.files:
+                    descriptors.append(
+                        await core.artifacts.import_file(
+                            item.path, name=item.name, media_type=item.media_type
+                        )
+                    )
+                return _success(ImportArtifactOutput(artifacts=descriptors))
+            except BaseException as exc:
+                for descriptor in descriptors:
+                    core.artifacts.release(descriptor.artifact_id)
+                if isinstance(exc, ArtifactError):
+                    return _failure(
+                        "artifact_import_failed",
+                        str(exc),
+                        {"item_index": len(descriptors)},
+                    )
+                raise
         if isinstance(request, ReleaseArtifactInput):
             return _success(
                 ReleaseArtifactOutput(
-                    released=core.artifacts.release(request.artifact_id)
+                    artifacts=[
+                        ReleasedArtifact(
+                            artifact_id=identifier,
+                            released=core.artifacts.release(identifier),
+                        )
+                        for identifier in request.artifact_ids
+                    ]
                 )
             )
         if isinstance(request, ListAdaptersInput):

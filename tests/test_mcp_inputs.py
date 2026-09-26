@@ -23,18 +23,20 @@ from .test_mcp_stdio import register, stdio_session
 
 async def import_and_execute(client: Client, fake: FakeAdapter, source: Path) -> None:
     imported = await client.call_tool(
-        "tyvrana_import_artifact", {"path": str(source), "name": "Texture"}
+        "tyvrana_import_artifact", {"files": [{"path": str(source), "name": "Texture"}]}
     )
     assert not imported.is_error
-    descriptor = ArtifactDescriptor.model_validate(imported.structured_content)
+    descriptor = ArtifactDescriptor.model_validate(
+        imported.structured_content["artifacts"][0]
+    )
     assert descriptor.byte_size == len(png())
     assert descriptor.sha256 == hashlib.sha256(png()).hexdigest()
     assert descriptor.media_type == "image/png" and descriptor.name == "Texture"
     assert all(isinstance(content, TextContent) for content in imported.content)
     assert str(source) not in imported.model_dump_json()
     assert (
-        "data" not in imported.structured_content
-        and "path" not in imported.structured_content
+        "data" not in imported.structured_content["artifacts"][0]
+        and "path" not in imported.structured_content["artifacts"][0]
     )
     os.unlink(source)
     work = asyncio.create_task(
@@ -66,10 +68,10 @@ async def import_and_execute(client: Client, fake: FakeAdapter, source: Path) ->
     }
     for expected in (True, False):
         released = await client.call_tool(
-            "tyvrana_release_artifact", {"artifact_id": descriptor.artifact_id}
+            "tyvrana_release_artifact", {"artifact_ids": [descriptor.artifact_id]}
         )
         assert not released.is_error and released.structured_content == {
-            "released": expected
+            "artifacts": [{"artifact_id": descriptor.artifact_id, "released": expected}]
         }
 
 
@@ -127,7 +129,9 @@ async def test_import_errors_are_sanitized_tool_failures(
         CoreConfig(port=0, max_artifact_size=1 if kind == "oversize" else 100)
     )
     async with Client(create_mcp_server(core)) as client:
-        result = await client.call_tool("tyvrana_import_artifact", arguments)
+        result = await client.call_tool(
+            "tyvrana_import_artifact", {"files": [arguments]}
+        )
         error = failure(result)
         assert error["code"] in {"artifact_import_failed", "invalid_arguments"}
         assert str(source) not in result.model_dump_json()
@@ -156,7 +160,7 @@ async def test_unreleased_import_is_cleaned_at_mcp_shutdown(tmp_path: Path) -> N
     source = local_file(tmp_path, png())
     async with session() as (core, client):
         response = await client.call_tool(
-            "tyvrana_import_artifact", {"path": str(source)}
+            "tyvrana_import_artifact", {"files": [{"path": str(source)}]}
         )
         assert not response.is_error
         assert core.artifacts.entry_count == 1
@@ -167,7 +171,9 @@ async def test_cancelled_mcp_import_cleans_partial_file(tmp_path: Path) -> None:
     source = local_file(tmp_path, b"x" * (8 * 1024 * 1024))
     async with session() as (core, client):
         work = asyncio.create_task(
-            client.call_tool("tyvrana_import_artifact", {"path": str(source)})
+            client.call_tool(
+                "tyvrana_import_artifact", {"files": [{"path": str(source)}]}
+            )
         )
         await eventually(lambda: core.artifacts.active_count == 1)
         work.cancel()
@@ -175,3 +181,72 @@ async def test_cancelled_mcp_import_cleans_partial_file(tmp_path: Path) -> None:
             await work
         await eventually(lambda: core.artifacts.active_count == 0)
         assert core.artifacts.entry_count == 0 and not core.artifacts._transfers
+
+
+async def test_batch_import_order_rollback_and_release(tmp_path: Path) -> None:
+    files = [local_file(tmp_path, bytes([i]), f"input{i}.bin") for i in range(8)]
+    async with session() as (core, client):
+        result = await client.call_tool(
+            "tyvrana_import_artifact",
+            {
+                "files": [
+                    {"path": str(p), "name": f"Label{i}"} for i, p in enumerate(files)
+                ]
+            },
+        )
+        assert not result.is_error
+        descriptors = result.structured_content["artifacts"]
+        assert [d["name"] for d in descriptors] == [f"Label{i}" for i in range(8)]
+        assert [d["sha256"] for d in descriptors] == [
+            hashlib.sha256(bytes([i])).hexdigest() for i in range(8)
+        ]
+        assert len({d["artifact_id"] for d in descriptors}) == 8
+        failed = await client.call_tool(
+            "tyvrana_import_artifact",
+            {"files": [{"path": str(files[0])}, {"path": str(tmp_path / "absent")}]},
+        )
+        assert failure(failed)["details"] == {"item_index": 1}
+        assert core.artifacts.entry_count == 8
+        identifiers = [d["artifact_id"] for d in descriptors]
+        for expected in (True, False):
+            released = await client.call_tool(
+                "tyvrana_release_artifact", {"artifact_ids": identifiers}
+            )
+            assert not released.is_error
+            assert released.structured_content == {
+                "artifacts": [
+                    {"artifact_id": identifier, "released": expected}
+                    for identifier in identifiers
+                ]
+            }
+        assert core.artifacts.entry_count == 0
+
+
+@pytest.mark.parametrize(
+    "files", [[], [{"path": "x"}] * 9, None, [{"path": "x" * 4097}]]
+)
+async def test_import_batch_bounds(files: object) -> None:
+    async with session() as (core, client):
+        result = await client.call_tool("tyvrana_import_artifact", {"files": files})
+        assert failure(result)["code"] == "invalid_arguments"
+        assert core.artifacts.entry_count == 0
+
+
+async def test_cancel_batch_releases_completed_items(tmp_path: Path) -> None:
+    first = local_file(tmp_path, b"small", "first.bin")
+    second = local_file(tmp_path, b"x" * (8 * 1024 * 1024), "second.bin")
+    async with session() as (core, client):
+        work = asyncio.create_task(
+            client.call_tool(
+                "tyvrana_import_artifact",
+                {"files": [{"path": str(first)}, {"path": str(second)}]},
+            )
+        )
+        await eventually(
+            lambda: core.artifacts.entry_count == 1 and core.artifacts.active_count == 1
+        )
+        work.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await work
+        await eventually(lambda: core.artifacts.active_count == 0)
+        assert core.artifacts.entry_count == 0

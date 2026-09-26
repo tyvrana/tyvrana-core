@@ -233,19 +233,17 @@ to use, but contain no source path or embedded bytes:
 Input and output attachments are independent; input descriptors are not echoed
 as output artifacts.
 
-`tyvrana_import_artifact` takes required `path`, optional `name`, and optional
-`media_type`. It copies a readable local regular file into core-owned temporary
-storage and returns an `ArtifactDescriptor` directly:
+`tyvrana_import_artifact` atomically imports `files`, a list of 1..8 entries
+with required `path`, optional `name`, and optional `media_type`. It returns
+`{"artifacts": [...]}` with ordered descriptors (`artifact_id`, `name`,
+`media_type`, `byte_size`, `sha256`). A single file uses the same list contract.
+Use batches for reference sets; attach up to eight returned IDs per operation.
+If any item fails or the call is cancelled, all imports from that call are
+released; existing artifacts are preserved. Import errors identify `item_index`.
+Each path is bounded to 4096 characters; store byte/entry quotas still apply.
 
-```text
-{
-  artifact_id: string, name: string, media_type: string,
-  byte_size: integer, sha256: string
-}
-```
-
-For example, `{"path": "textures/checker.png", "name": "Checker"}` imports a
-file relative to core's working directory. Absolute local paths are also accepted.
+For example, `{"files": [{"path": "textures/checker.png", "name": "Checker"}]}`
+imports a file relative to core's working directory. Absolute paths are accepted.
 This is exclusively a **local ingestion boundary**: the source path terminates
 at core, is not retained in public artifact metadata, and never enters the
 application protocol. Adapters receive descriptors and binary bytes, not the
@@ -266,9 +264,10 @@ PNG/JPEG declarations must match the signature. Core is generic storage, not a
 full raster decoder: adapters must validate supported formats and decoded bounds.
 Nulls and unknown input fields are rejected.
 
-`tyvrana_release_artifact` takes `{"artifact_id": "..."}` and returns
-`{"released": true}` on the first release, or `{"released": false}` if unavailable
-or already released. Imports remain reusable across operations until release or
+`tyvrana_release_artifact` takes `{"artifact_ids": ["..."]}` (1..64 unique IDs)
+and returns `{"artifacts": [{"artifact_id": "...", "released": true}]}` in input
+order. Each `released` is false if already released or unavailable.
+Imports remain reusable across operations until release or
 runtime shutdown. Release prevents new admissions immediately. Already admitted
 transfers retain their readers and quota reservation until transfer finishes;
 they do not depend on the original local file.
