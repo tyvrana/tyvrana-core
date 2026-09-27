@@ -3,6 +3,7 @@
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from tyvrana_protocol import JsonValue
 
 type Key = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -231,6 +232,8 @@ class MutationStatus(Model):
     operation: str | None = None
     revision: int | None = None
     error_code: str | None = None
+    error_message: Annotated[str, Field(max_length=1024)] | None = None
+    error_details: JsonValue = None
 
 
 class ApplyInput(ProjectInput):

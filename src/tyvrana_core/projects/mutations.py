@@ -16,7 +16,7 @@ from tyvrana_protocol.mutations import (
     DocumentMutationResult,
 )
 
-from ..errors import AdapterDisconnected, AdapterNotFound
+from ..errors import AdapterDisconnected, AdapterNotFound, bounded_error, core_failure
 from .continuity import AttestInput, Baseline
 from .models import Binding, Change, MutationStatus, MutationStatusInput
 from .store import ProjectError, now
@@ -74,6 +74,8 @@ class WorkingMutations:
             operation=intent["operation"],
             revision=intent["revision"] if state == "completed" else None,
             error_code=intent.get("error_code"),
+            error_message=intent.get("error_message"),
+            error_details=intent.get("error_details"),
         )
 
     async def execute(
@@ -118,9 +120,18 @@ class WorkingMutations:
 
         def finished(completed: asyncio.Task[OperationSuccess]) -> None:
             self.tasks.pop(request.request_id, None)
-            error = "cancelled" if completed.cancelled() else completed.exception()
+            error = (
+                asyncio.CancelledError()
+                if completed.cancelled()
+                else completed.exception()
+            )
             if error is None:
                 return
+            diagnostic = (
+                bounded_error(error.code, str(error), error.details)
+                if isinstance(error, ProjectError)
+                else core_failure(error)
+            )
             # Retain failures before native dispatch too (for example queued work
             # whose document becomes unavailable). Never downgrade a committed row.
             with self.service.store.transaction(write=True) as db:
@@ -134,9 +145,9 @@ class WorkingMutations:
                 if intent["state"] != "completed":
                     intent.update(
                         state="uncommitted",
-                        error_code="cancelled"
-                        if completed.cancelled()
-                        else getattr(error, "code", type(error).__name__),
+                        error_code=diagnostic.code,
+                        error_message=diagnostic.message,
+                        error_details=diagnostic.details,
                     )
                     db.execute(
                         "UPDATE document_mutations SET data=? WHERE id=?",

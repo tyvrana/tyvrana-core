@@ -37,7 +37,8 @@ from ..errors import (
     OperationTimeout,
     RemoteOperationError,
     UnsupportedOperation,
-    bounded_diagnostics,
+    bounded_error,
+    core_failure,
 )
 from ..projects.catalog import CATALOG_SHA256, CONTRACTS
 from ..projects.models import ProjectRevision
@@ -385,9 +386,8 @@ def _success(output: BaseModel) -> CallToolResult:
 def _failure(
     code: str, message: str, details: JsonValue = None, operation: str | None = None
 ) -> CallToolResult:
-    error: dict[str, JsonValue] = {"code": code, "message": message}
-    if details is not None:
-        error["details"] = bounded_diagnostics(details)
+    diagnostic = bounded_error(code, message, details)
+    error: dict[str, JsonValue] = diagnostic.model_dump(mode="json")
     if operation is not None:
         error["operation"] = operation
     return CallToolResult(
@@ -411,19 +411,8 @@ def _core_failure(
     | AdapterDisconnected,
     operation: str | None = None,
 ) -> CallToolResult:
-    if isinstance(error, RemoteOperationError):
-        return _failure(
-            error.error.code, error.error.message, error.error.details, operation
-        )
-    if isinstance(error, AdapterNotFound):
-        code = "adapter_not_found"
-    elif isinstance(error, UnsupportedOperation):
-        code = "operation_unsupported"
-    elif isinstance(error, OperationTimeout):
-        code = "operation_timeout"
-    else:
-        code = "adapter_disconnected"
-    return _failure(code, str(error), operation=operation)
+    diagnostic = core_failure(error)
+    return _failure(diagnostic.code, diagnostic.message, diagnostic.details, operation)
 
 
 async def _execute(

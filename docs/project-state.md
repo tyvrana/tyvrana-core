@@ -291,9 +291,14 @@ reports a qualified Core commit and its revision, not current visual acceptance.
 `uncommitted` reports failure to commit; `interrupted` means a durable pending
 intent has no surviving task, for example after a process interruption. Inspect
 actual application state before recovery: native changes may exist without a Core
-commit. Never blindly resubmit. Terminal state survives Core restart; an available
-`error_code` identifies failure, but historical intents may lack that diagnostic.
-Use domain inspection for original output details; this operation retains no
+commit. Never blindly resubmit. Terminal state survives Core restart. When available,
+`error_code`, `error_message` and `error_details` preserve the underlying typed
+failure, including item identity and validation cause when supplied by the adapter.
+Messages are limited to 1024 characters; JSON details to 16 KiB (oversized details
+are explicitly marked truncated). Immediate MCP failures use the same bounds.
+Unknown internal exceptions expose only a generic error, never exception dumps.
+Historical intents may lack diagnostics; status reads do not rewrite them.
+Use domain inspection for successful output details; this operation retains no
 original operation result and makes no application calls.
 
 Registry waits observe registration changes, not mutation completion. Check the

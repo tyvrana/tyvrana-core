@@ -1,5 +1,6 @@
 """Failures that core callers can handle without parsing log messages."""
 
+import asyncio
 import json
 
 from tyvrana_protocol import JsonValue, ProtocolError
@@ -64,3 +65,33 @@ def bounded_diagnostics(details: JsonValue) -> JsonValue:
     if len(encoded.encode()) <= 16384:
         return details
     return {"diagnostics_truncated": True, "byte_limit": 16384}
+
+
+def bounded_error(code: str, message: str, details: JsonValue = None) -> ProtocolError:
+    """Use the same compact diagnostic for immediate and retained failures."""
+    if len(message) > 1024:
+        message = message[:1009] + "... [truncated]"
+    return ProtocolError(
+        code=code, message=message, details=bounded_diagnostics(details)
+    )
+
+
+def core_failure(error: BaseException) -> ProtocolError:
+    """Expose declared routing failures, never arbitrary exception contents."""
+    if isinstance(error, RemoteOperationError):
+        return bounded_error(error.error.code, error.error.message, error.error.details)
+    if isinstance(error, asyncio.CancelledError):
+        return bounded_error("cancelled", "Mutation execution cancelled")
+    if isinstance(error, AdapterNotFound):
+        code = "adapter_not_found"
+    elif isinstance(error, UnsupportedOperation):
+        code = "operation_unsupported"
+    elif isinstance(error, OperationTimeout):
+        code = "operation_timeout"
+    elif isinstance(error, AdapterDisconnected):
+        code = "adapter_disconnected"
+    else:
+        return bounded_error(
+            "internal_error", "Tool execution failed; see the server logs."
+        )
+    return bounded_error(code, str(error))
