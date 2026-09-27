@@ -92,7 +92,9 @@ async def test_migration_runtime_continuity(
             proof_started = False
             proof_finished = False
 
-            async def observed(adapter: AdapterInfo) -> DocumentAttestation:
+            async def observed(
+                adapter: AdapterInfo, **kwargs: Any
+            ) -> DocumentAttestation:
                 nonlocal proof_started, proof_finished
                 is_proof = (
                     adapter.registration.runtime is not None

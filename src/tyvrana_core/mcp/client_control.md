@@ -51,14 +51,14 @@ its authoring targets. Exploratory work stays provisional within that stage; acc
 only after observing required evidence, then advance. Repair stale prerequisites or
 blocking issues before dependent work; reopen the upstream stage before changing it.
 Simple unbound one-step edits need no contract. Use project.continue for recovery.
-Its reconciliations expose retained recovery handles. Running/pending is nonterminal;
-Core polls attestation. Follow next_action with project.reconcile_status and bounded
-wait_seconds. Never replay native work or save before completed. Failure retains
-diagnostics; Core restart interrupts proof without adopting a head.
-For mutation_pending saves, await project.mutation_status.
-Save/checkpoint before risky work. Abandon failed branches with
-project.restore(mode="checkout"): preserve history, reset the working head, without
-per-record freshness repair or reacceptance. Shutdown recovery is normal.
+Running/pending is nonterminal: await status_operation/ID; never replay native work.
+Reconcile proven divergence, then save. mutation_pending uses project.mutation_status.
+Verify durability by typed reopen -> project.attest(mode="reattach") -> completed
+Core status -> checkpoint. Native attestation alone cannot restore trust. Pending
+apply/continue/verify use project.operation_status. Checkpoints are historical; continuation
+reports current trust. Restart interrupts pending work without replay.
+Save/checkpoint before risk; project.restore(mode="checkout") abandons a failed
+branch without reacceptance.
 
 Never manually launch proof applications: project bootstrap/migrate/restore/reconcile
 manage them internally. Select only work adapters; managed proofs are not work targets.

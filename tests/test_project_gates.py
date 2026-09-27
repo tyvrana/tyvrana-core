@@ -569,7 +569,7 @@ def test_semantic_contract_has_no_domain_pipeline_or_obsolete_stage_fields() -> 
         "biological",
     ]:
         assert domain not in schemas
-    assert len(CONTRACTS) == 17
+    assert len(CONTRACTS) == 18
     assert {c.name for c in CONTRACTS} == {
         "project." + suffix
         for suffix in [
@@ -580,6 +580,7 @@ def test_semantic_contract_has_no_domain_pipeline_or_obsolete_stage_fields() -> 
             "delta",
             "verify",
             "mutation_status",
+            "operation_status",
             "attest",
             "attest_status",
             "attest_cancel",

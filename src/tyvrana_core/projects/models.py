@@ -251,6 +251,7 @@ class MutationStatus(Model):
     stage_id: str | None = None
     reconciled_by: Key | None = None
     post_state_attested: bool = False
+    persisted_artifact_sha256: str | None = None
     replay_safe: bool = False
     recovery_operation: Literal["project.reconcile"] | None = None
     recovery_proof: Literal["receipt", "inverse_delta"] | None = None
@@ -438,6 +439,48 @@ class SearchResult(Model):
     next_offset: int | None
 
 
+class ProjectOperationStatusInput(ProjectInput):
+    operation_id: Key
+    wait_seconds: float = Field(default=0, ge=0, le=20, allow_inf_nan=False)
+
+
+class ProjectOperationHandle(Model):
+    operation_id: Key
+    operation: str
+    state: Literal["pending", "completed", "failed"]
+    attestation: AttestationObservation | None = None
+    status_operation: Literal["project.operation_status"] = "project.operation_status"
+    wait_seconds: float = 20.0
+    next_action: Literal["observe_status", "inspect_result", "inspect_failure"] = (
+        "observe_status"
+    )
+    error_code: str | None = None
+    error_message: str | None = None
+    error_details: JsonValue = None
+
+    @model_validator(mode="after")
+    def lifecycle(self) -> Self:
+        object.__setattr__(
+            self,
+            "next_action",
+            {"completed": "inspect_result", "failed": "inspect_failure"}.get(
+                self.state, "observe_status"
+            ),
+        )
+        return self
+
+
+class AttestationHandle(Model):
+    attestation_id: Key
+    document_id: str | None = None
+    state: Literal["running", "completed", "failed"]
+    attestation: AttestationObservation | None = None
+    status_operation: Literal["project.attest_status"] = "project.attest_status"
+    wait_seconds: float = 20.0
+    next_action: str
+    error_code: str | None = None
+
+
 class ApplicationStatus(Model):
     document_id: str
     application: str
@@ -445,6 +488,13 @@ class ApplicationStatus(Model):
     adapter_ids: list[str]
     state: Literal["connected", "unavailable"]
     locator: str | None
+    trust: Literal[
+        "current", "unverified", "pending", "reattachment_required", "diverged"
+    ] = "unverified"
+    next_action: str = "inspect_document"
+    error_code: str | None = None
+    committed_digest: str | None = None
+    saved_artifact_sha256: str | None = None
 
 
 class ReconcileResult(Model):
@@ -495,6 +545,9 @@ class Continuation(Model):
     recent_delta: Delta | None
     notices: list[str]
     reconciliations: list[ReconcileResult] = Field(default_factory=list, max_length=8)
+    mutations: list[MutationStatus] = Field(default_factory=list, max_length=8)
+    attestations: list[AttestationHandle] = Field(default_factory=list, max_length=8)
+    operations: list[ProjectOperationHandle] = Field(default_factory=list, max_length=8)
 
 
 class RemoveResult(Model):
@@ -505,3 +558,7 @@ class RemoveResult(Model):
 class ProjectRevision(Model):
     project_id: str
     revision: int
+
+
+class ProjectOperation(ProjectOperationHandle):
+    result: ApplyResult | Continuation | None = None

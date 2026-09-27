@@ -205,3 +205,44 @@ never starts native save and does not advertise reconciliation of an unexecuted
 operation. Status reads are idempotent. Core restart interrupts retained work;
 it does not restart a save automatically. A completed save identifies the committed
 receipt, not artistic acceptance; reopen and verify persistence normally.
+
+### Reopening, trust restoration and durable continuation
+
+Saved bytes, committed semantic content and current document trust are distinct.
+A completed guarded save exposes `persisted_artifact_sha256` in mutation status.
+Its committed receipt names the exact saved head. Reopening creates a new document
+session; matching native bytes alone do not update Core's attachment metadata.
+Use `project.attest(mode="reattach")` with the current revision and work adapter.
+
+All attestation modes retain their work. `running` returns a Core `attestation_id`,
+its current native evidence handle, `status_operation=project.attest_status` and
+`next_action=observe_status`. Wait up to20seconds per status call. Core observes
+that same native job within a600-second execution deadline and commits matching
+verification metadata. Reading native attestation status alone cannot perform that
+commit. Duplicate pending requests join the same work. Terminal status is historical
+completion, not fresh inspection; repeated status reads neither rehash nor replay.
+
+Reattachment checks the current project, runtime, complete digest, format, scoped
+resource identities and recorded saved artifact hash. It preserves the semantic
+revision and restores matching validation/binding contexts. A mismatched document,
+resource, file, revision or interrupted/failed evidence cannot promote trust. Capture
+cannot replace an existing divergent baseline; only proven reconciliation can recover
+an authored transition. Runtime transport reconnect can retain evidence; a changed
+runtime fails closed. Core restart never automatically resumes interrupted work.
+
+Checkpoint admission performs fresh verification after successful reattachment.
+Slow `project.apply`, `project.continue` and binding `project.verify` return a retained `operation_id` and
+`status_operation=project.operation_status`; `pending` is nonterminal. Observe the
+original operation instead of resubmitting a batch. Completion returns its typed
+original result; checkpoint publication is atomic at the requested revision.
+Interruption, true divergence or stale revision never commits the batch. The same
+600-second execution bound and20-second status wait apply. This also prevents slow
+continuation verification from misreporting a connected document as divergent.
+
+Continuation exposes pending mutation, attestation and project-operation handles,
+current application trust, the committed digest and saved artifact SHA separately
+from historical checkpoint summaries. It avoids competing attestation on documents
+with retained work. A new client can resume pending status from these handles,
+inspect failures without blind replay, and recover ordinary project meaning from
+the checkpoint. A successful checkpoint is a semantic revision marker, not another
+native save or artistic acceptance.

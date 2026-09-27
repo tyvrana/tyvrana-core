@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
@@ -13,17 +14,31 @@ from tyvrana_protocol import (
     DocumentAttestation,
     DocumentAttestationJob,
     DocumentAttestationResponse,
+    JsonValue,
 )
 
-from ..errors import AdapterDisconnected, AdapterNotFound
+from ..errors import AdapterDisconnected, AdapterNotFound, bounded_error, core_failure
 from .attestation_migration import FormatMigration, claim_revisions
-from .models import Binding, BindingObservation, Document, Key, Model, ProjectInput
+from .models import (
+    AttestationObservation,
+    Binding,
+    BindingObservation,
+    Document,
+    Key,
+    Model,
+    ProjectInput,
+)
 from .proofs import PROOF_WORKFLOW
 from .store import ProjectError
 
 if TYPE_CHECKING:
     from ..registry import AdapterInfo
     from .service import ProjectService
+
+
+OBSERVATION_OWNER: ContextVar[
+    Callable[["AdapterInfo", DocumentAttestationJob, str], None] | None
+] = ContextVar("continuity_observation_owner", default=None)
 
 
 class AttestInput(ProjectInput):
@@ -67,12 +82,15 @@ class AttestResult(Model):
     document_session_id: str
     adapter_id: str
     semantic_revision_changed: bool = False
+    trust: Literal["verified"] = "verified"
+    next_action: Literal["checkpoint_or_continue"] = "checkpoint_or_continue"
     baseline_migrated: bool = False
     already_migrated: bool = False
 
 
 class AttestStatusInput(ProjectInput):
     attestation_id: Key
+    wait_seconds: float = Field(default=0, ge=0, le=20, allow_inf_nan=False)
 
 
 class AttestJob(Model):
@@ -81,7 +99,26 @@ class AttestJob(Model):
     result: AttestResult | None = None
     error_code: str | None = None
     error_message: str | None = None
+    error_details: JsonValue = None
     poll_after_seconds: float = 2.0
+    document_id: str | None = None
+    attestation: AttestationObservation | None = None
+    status_operation: Literal["project.attest_status"] = "project.attest_status"
+    wait_seconds: float = 20.0
+    next_action: Literal[
+        "observe_status", "checkpoint_or_continue", "inspect_failure"
+    ] = "observe_status"
+
+    @model_validator(mode="after")
+    def lifecycle(self) -> "AttestJob":
+        object.__setattr__(
+            self,
+            "next_action",
+            {"completed": "checkpoint_or_continue", "failed": "inspect_failure"}.get(
+                self.state, "observe_status"
+            ),
+        )
+        return self
 
 
 class Baseline(Model):
@@ -101,6 +138,7 @@ class Baseline(Model):
 
 class Continuity:
     caller_wait_seconds = 20.0
+    execution_seconds = 600.0
 
     def __init__(self, service: "ProjectService") -> None:
         self.service = service
@@ -126,22 +164,86 @@ class Continuity:
             return result.model_copy(
                 update=dict(
                     state="failed",
+                    next_action="inspect_failure",
                     error_code="attestation_interrupted",
                     error_message="Attestation interrupted; retry the operation",
                 )
             )
         return result
 
+    async def observe_status(
+        self, project: str, key: str, wait_seconds: float
+    ) -> AttestJob:
+        self.status(project, key)
+        task = self.tasks.get(key)
+        if task and wait_seconds:
+            await asyncio.wait({task}, timeout=wait_seconds)
+        return self.status(project, key)
+
+    def continuation(self, project: str) -> list[AttestJob]:
+        with self.service.store.transaction() as db:
+            keys = [
+                r[0]
+                for r in db.execute(
+                    "SELECT id FROM document_mutations WHERE project_id=? AND "
+                    "json_extract(data,'$.kind')='attest' ORDER BY rowid DESC LIMIT 8",
+                    (project,),
+                )
+            ]
+        return sorted(
+            (self.status(project, k) for k in keys), key=lambda r: r.state != "running"
+        )
+
     async def start(
         self, project: str, request: AttestInput
     ) -> AttestResult | AttestJob:
-        if request.mode not in {"bootstrap", "migrate"}:
-            return await self.attest(project, request)
+        duplicate = None
+        with self.service.store.transaction() as db:
+            for row in db.execute(
+                "SELECT id,data FROM document_mutations WHERE project_id=? "
+                "AND document_id=?",
+                (project, request.document_id),
+            ):
+                stored = json.loads(row[1])
+                if (
+                    row[0] in self.tasks
+                    and stored.get("kind") == "attest"
+                    and stored.get("request") == request.model_dump(mode="json")
+                ):
+                    duplicate = row[0]
+                    break
+        if duplicate:
+            return await self.observe_status(
+                project, duplicate, self.caller_wait_seconds
+            )
         key = uuid4().hex
         data: dict[str, Any] = dict(
             kind="attest",
-            result=AttestJob(attestation_id=key, state="running").model_dump(),
+            request=request.model_dump(mode="json"),
+            result=AttestJob(
+                attestation_id=key, document_id=request.document_id, state="running"
+            ).model_dump(),
         )
+
+        def write() -> None:
+            with self.service.store.transaction(write=True) as db:
+                db.execute(
+                    "UPDATE document_mutations SET data=? WHERE id=?",
+                    (json.dumps(data), key),
+                )
+
+        def progress(
+            adapter: "AdapterInfo", job: DocumentAttestationJob, operation: str
+        ) -> None:
+            data["result"]["attestation"] = AttestationObservation(
+                adapter_id=adapter.instance_id,
+                job_id=job.job_id,
+                operation=operation,
+                state=job.state,
+                digest=job.result.digest if job.result else None,
+            ).model_dump()
+            write()
+
         with self.service.store.transaction(write=True) as db:
             db.execute(
                 "INSERT INTO document_mutations VALUES (?,?,?,?)",
@@ -149,26 +251,44 @@ class Continuity:
             )
 
         async def run() -> AttestResult:
+            token = OBSERVATION_OWNER.set(progress)
             try:
-                result = await self.attest(project, request)
-                data["result"] = AttestJob(
-                    attestation_id=key, state="completed", result=result
-                ).model_dump()
+                async with asyncio.timeout(self.execution_seconds):
+                    if request.mode == "migrate":
+                        result = await self.attest(project, request)
+                    else:
+                        async with self.service.mutations.lock:
+                            result = await self.attest(project, request)
+                data["result"].update(
+                    state="completed",
+                    result=result.model_dump(),
+                    next_action="checkpoint_or_continue",
+                )
                 return result
             except BaseException as exc:
-                data["result"] = AttestJob(
-                    attestation_id=key,
+                error = (
+                    bounded_error(exc.code, str(exc), exc.details)
+                    if isinstance(exc, ProjectError)
+                    else bounded_error(
+                        "attestation_timeout"
+                        if isinstance(exc, TimeoutError)
+                        else "attestation_interrupted",
+                        "Attestation stopped without committing trust",
+                    )
+                    if isinstance(exc, (TimeoutError, asyncio.CancelledError))
+                    else core_failure(exc)
+                )
+                data["result"].update(
                     state="failed",
-                    error_code=getattr(exc, "code", "attestation_interrupted"),
-                    error_message=str(exc)[:512] or "Attestation cancelled",
-                ).model_dump()
+                    next_action="inspect_failure",
+                    error_code=error.code,
+                    error_message=error.message,
+                    error_details=error.details,
+                )
                 raise
             finally:
-                with self.service.store.transaction(write=True) as db:
-                    db.execute(
-                        "UPDATE document_mutations SET data=? WHERE id=?",
-                        (json.dumps(data), key),
-                    )
+                OBSERVATION_OWNER.reset(token)
+                write()
 
         task = asyncio.create_task(run())
         self.tasks[key] = task
@@ -209,6 +329,9 @@ class Continuity:
         *,
         progress: Callable[[DocumentAttestationJob, str], None] | None = None,
     ) -> DocumentAttestation:
+        owner = OBSERVATION_OWNER.get()
+        if progress is None and owner is not None:
+            progress = partial(owner, adapter)
         contracts = [
             c
             for c in adapter.registration.operations
@@ -307,15 +430,20 @@ class Continuity:
             evidence = observed
         current = self.service.core.registry.get(adapter.instance_id)
         if (
-            current.connection_id != adapter.connection_id
-            and not (
-                progress is not None
-                and adapter.registration.runtime is not None
-                and current.registration.runtime == adapter.registration.runtime
-                and current.registration.application == adapter.registration.application
-                and current.catalog_sha256 == adapter.catalog_sha256
+            (
+                current.connection_id != adapter.connection_id
+                and not (
+                    progress is not None
+                    and adapter.registration.runtime is not None
+                    and current.registration.runtime == adapter.registration.runtime
+                    and current.registration.application
+                    == adapter.registration.application
+                    and current.catalog_sha256 == adapter.catalog_sha256
+                )
             )
-        ) or current.registration.project_id != evidence.project_id:
+            or current.registration.project_id != evidence.project_id
+            or current.registration.runtime != adapter.registration.runtime
+        ):
             raise ProjectError(
                 "application_changed", "Connection/document changed during attestation"
             )
@@ -335,12 +463,21 @@ class Continuity:
         progress: Callable[["AdapterInfo", DocumentAttestationJob, str], None]
         | None = None,
     ) -> tuple["AdapterInfo", str] | None:
+        progress = progress or OBSERVATION_OWNER.get()
         baseline = self.baseline(project, document.id)
+        if (
+            baseline
+            and baseline.application_project_id != document.application_project_id
+        ):
+            raise ProjectError(
+                "document_mismatch", "Trusted baseline belongs to another document"
+            )
         if baseline is None:
             return None
         if baseline.application_project_id != document.application_project_id:
             return None
         matches = []
+        failure: ProjectError | None = None
         for adapter in self.service.core.registry.list():
             if (
                 adapter.registration.application != document.application
@@ -380,6 +517,27 @@ class Continuity:
                 )
             ):
                 matches.append(adapter)
+            elif progress:
+                if (
+                    evidence.host_session_id != baseline.host_session_id
+                    or evidence.document_session_id != baseline.document_session_id
+                ):
+                    failure = ProjectError(
+                        "reattachment_required",
+                        "Loaded document requires project.attest(mode=reattach); "
+                        "native observation alone does not restore trust",
+                        document_id=document.id,
+                        adapter_id=adapter.instance_id,
+                    )
+                else:
+                    failure = ProjectError(
+                        "content_diverged",
+                        "Current content or resources differ from the trusted head",
+                        document_id=document.id,
+                        next_action="inspect_document",
+                    )
+        if not matches and failure:
+            raise failure
         return (matches[0], baseline.context_id) if len(matches) == 1 else None
 
     async def attest(self, project: str, request: AttestInput) -> AttestResult:
@@ -474,6 +632,13 @@ class Continuity:
                     proof_adapter,
                     artifact_locator,
                 )
+        if (
+            baseline
+            and baseline.application_project_id != document.application_project_id
+        ):
+            raise ProjectError(
+                "document_mismatch", "Trusted baseline belongs to another document"
+            )
         evidence = await self.observe(adapter)
         if request.mode == "capture":
             if baseline and (
@@ -510,41 +675,56 @@ class Continuity:
                         "Capture cannot refresh invalidated acceptance",
                     )
             if baseline and (
-                evidence.digest != baseline.digest or evidence.format != baseline.format
+                evidence.digest != baseline.digest
+                or evidence.format != baseline.format
+                or evidence.resource_scope != baseline.resource_scope
+                or [r.model_dump(mode="json") for r in evidence.resources]
+                != baseline.resources
             ):
-                with store.transaction() as db:
-                    accepted = db.execute(
-                        (
-                            "SELECT 1 FROM records WHERE project_id=? AND "
-                            "kind='milestone' AND "
-                            "json_extract(data,'$.status')='accepted'"
-                        ),
-                        (project,),
-                    ).fetchone()
-                if accepted:
-                    raise ProjectError(
-                        "content_changed",
-                        (
-                            "Reopen and validate changed content before replacing an "
-                            "accepted baseline"
-                        ),
-                    )
+                raise ProjectError(
+                    "content_changed",
+                    "Capture cannot adopt divergence; use proven reconciliation",
+                )
         elif request.mode == "reattach":
             if (
                 baseline is None
                 or evidence.digest != baseline.digest
                 or evidence.format != baseline.format
+                or evidence.resource_scope != baseline.resource_scope
+                or {
+                    (r.resource_kind, r.resource_id): r.model_dump(mode="json")
+                    for r in evidence.resources
+                }
+                != {
+                    (r["resource_kind"], r["resource_id"]): r
+                    for r in baseline.resources
+                }
+                or (
+                    baseline.artifact_sha256 is not None
+                    and evidence.file_sha256 != baseline.artifact_sha256
+                )
             ):
                 raise ProjectError(
                     "content_mismatch",
                     "Reattachment requires matching durable strong evidence",
                 )
-            resolved = await self.resolve(project, document)
-            if resolved and resolved[0].instance_id != adapter.instance_id:
-                raise ProjectError(
-                    "attachment_conflict",
-                    "The attested document is still attached to another live host",
-                )
+            for other in self.service.core.registry.list():
+                if (
+                    other.instance_id == adapter.instance_id
+                    or other.registration.application != document.application
+                    or other.registration.project_id != document.application_project_id
+                ):
+                    continue
+                candidate = await self.observe(other)
+                if (
+                    candidate.host_session_id == baseline.host_session_id
+                    and candidate.document_session_id == baseline.document_session_id
+                    and candidate.digest == baseline.digest
+                ):
+                    raise ProjectError(
+                        "attachment_conflict",
+                        "The trusted document remains attached to another live host",
+                    )
         else:
             if (
                 baseline is not None
@@ -639,12 +819,15 @@ class Continuity:
         )
         with store.transaction(write=True) as db:
             store.expect(store.project(db, project), request.expected_revision)
-            if (
-                self.service.core.registry.get(adapter.instance_id).connection_id
-                != adapter.connection_id
+            current = self.service.core.registry.get(adapter.instance_id)
+            if current.connection_id != adapter.connection_id and not (
+                adapter.registration.runtime is not None
+                and current.registration.runtime == adapter.registration.runtime
+                and current.registration.project_id == adapter.registration.project_id
+                and current.catalog_sha256 == adapter.catalog_sha256
             ):
                 raise ProjectError(
-                    "application_changed", "Adapter reconnected before baseline commit"
+                    "application_changed", "Runtime changed before baseline commit"
                 )
             db.execute(
                 "INSERT OR REPLACE INTO document_attestations VALUES (?,?,?)",

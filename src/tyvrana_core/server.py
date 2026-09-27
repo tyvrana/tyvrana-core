@@ -98,6 +98,7 @@ class AdapterServer:
                 self.artifacts.close()
                 return
             self._stopping = True
+            await self.projects.operations.shutdown()
             await self.projects.continuity.shutdown()
             await self.projects.restores.shutdown()
             await self.projects.reconciliation.shutdown()

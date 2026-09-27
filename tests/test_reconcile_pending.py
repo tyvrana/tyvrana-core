@@ -13,6 +13,7 @@ from tyvrana_core.projects.models import Continuation, ReconcileResult
 from tyvrana_core.projects.reconcile import Reconciliation
 from tyvrana_core.projects.store import ProjectError
 
+from .helpers import eventually
 from .test_mutation_recovery import working
 from .test_working_lineage import editor
 
@@ -53,7 +54,7 @@ async def test_pending_lifecycle(
             owner = core.projects.reconciliation
             owner.caller_wait_seconds = 0.02
             if outcome == "timeout":
-                owner.execution_seconds = 0.3
+                owner.execution_seconds = 1.0
             faults["pending"] = True
             request = dict(
                 project_id=key,
@@ -69,6 +70,8 @@ async def test_pending_lifecycle(
             )
             pending = await core.projects.execute("project.reconcile", request)
             assert isinstance(pending, ReconcileResult)
+            await eventually(lambda: owner.status(key, "recovery").state == "pending")
+            pending = owner.status(key, "recovery")
             assert (
                 pending.state == "pending" and pending.next_action == "observe_status"
             )

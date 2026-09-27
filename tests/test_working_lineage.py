@@ -19,6 +19,8 @@ from tyvrana_protocol import (
     OperationRequest,
     OperationSuccess,
     ProofHostStart,
+    ResourceInspectionRequest,
+    ResourceInspectionResult,
 )
 from tyvrana_protocol.mutations import DocumentMutationJob, DocumentMutationRequest
 from websockets.asyncio.client import connect
@@ -66,6 +68,14 @@ async def editor(
     async with lifecycle.stack, connect(core.uri, proxy=None) as socket:
         fake = FakeAdapter(socket)
         contracts = [
+            OperationContract(
+                name="editor.resource.inspect",
+                description="Inspect resource identity",
+                effect="read_only",
+                execution="synchronous",
+                arguments_schema=ResourceInspectionRequest.model_json_schema(),
+                result_schema=ResourceInspectionResult.model_json_schema(),
+            ),
             OperationContract(
                 name="editor.document.attest",
                 description="Strong evidence",
@@ -155,6 +165,7 @@ async def editor(
                     instance_id=instance,
                     application="editor",
                     project_id="saved",
+                    resource_inspection="editor.resource.inspect",
                     operations=(*contracts, *lifecycle.contracts()),
                     runtime=lifecycle.runtime(lease),
                     project_path="/fixture.blend",
@@ -171,6 +182,28 @@ async def editor(
                 assert isinstance(request, OperationRequest)
                 if request.operation.startswith("editor.proof."):
                     result = await lifecycle.respond(request)
+                elif request.operation == "editor.resource.inspect":
+                    inspection = ResourceInspectionRequest.model_validate(
+                        request.arguments
+                    )
+                    if faults is not None:
+                        assert not faults.get("pending") or faults.get("release"), (
+                            "Inspection started before evidence completed"
+                        )
+                        faults["inspections"] = faults.get("inspections", 0) + 1
+                    result = dict(
+                        project_id="saved",
+                        resources=[
+                            dict(
+                                **r.model_dump(),
+                                state="present",
+                                name="Base",
+                                fingerprint="base-original",
+                            )
+                            for r in inspection.resources
+                        ],
+                        fingerprint_scope="Resource identity",
+                    )
                 elif request.operation == "editor.document.attest":
                     result = copy.deepcopy(value)
                     if faults is not None and faults.get("pending"):

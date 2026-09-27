@@ -19,6 +19,8 @@ from .models import (
     MutationStatus,
     MutationStatusInput,
     Project,
+    ProjectOperation,
+    ProjectOperationStatusInput,
     RemoveInput,
     RemoveResult,
     SearchInput,
@@ -29,6 +31,14 @@ from .reconcile_models import ReconcileInput, ReconcileResult, ReconcileStatusIn
 from .restore_models import RestoreInput, RestoreResult, RestoreStatusInput
 
 
+class ApplyResponse(RootModel[ApplyResult | ProjectOperation]):
+    pass
+
+
+class ContinueResponse(RootModel[Continuation | ProjectOperation]):
+    pass
+
+
 class AttestResponse(RootModel[AttestResult | AttestJob]):
     pass
 
@@ -36,6 +46,17 @@ class AttestResponse(RootModel[AttestResult | AttestJob]):
 DECLARATIONS: dict[
     str, tuple[type[BaseModel], type[BaseModel], Literal["read_only", "mutating"], str]
 ] = {
+    "project.operation_status": (
+        ProjectOperationStatusInput,
+        ProjectOperation,
+        "read_only",
+        "Observe retained apply/continue/verify work using "
+        "operation_id and wait_seconds up to20. Pending is nonterminal; do not "
+        "resubmit the batch. Core waits on the same native evidence within600seconds. "
+        "Completed result is the original committed batch or observed continuation, "
+        "not a new current attestation. Failed/interrupted work never automatically "
+        "replays after Core restart. Idempotent status makes no application calls.",
+    ),
     "project.mutation_status": (
         MutationStatusInput,
         MutationStatus,
@@ -132,14 +153,24 @@ DECLARATIONS: dict[
             "the existing baseline's durable file SHA256 and an independent "
             "matching new-format proof. It replaces only baseline metadata, "
             "derives freshness for unchanged historically accepted claims, "
-            "and preserves acceptance history. No semantic revision churn."
+            "and preserves acceptance history. No semantic revision churn. All modes "
+            "retain slow evidence: running is nonterminal; use project.attest_status "
+            "with attestation_id and wait_seconds up to20. Native attest_status "
+            "alone cannot finish Core trust restoration. Only completed Core "
+            "reattachment restores the exact matching head; then checkpoint is "
+            "admissible without another mutation/reconciliation. Inspect mismatches; "
+            "never force adoption. Same pending request observes existing work."
         ),
     ),
     "project.attest_status": (
         AttestStatusInput,
         AttestJob,
         "read_only",
-        "Observe retained automatic attestation proof without lifecycle choreography.",
+        "Observe all retained attestation modes with attestation_id and bounded "
+        "wait_seconds. Running is nonterminal. Completed means Core committed "
+        "verification metadata without a semantic revision; result identifies the "
+        "verified runtime/head and next_action. This is historical completion, not "
+        "new live inspection. Failure preserves diagnostics. No native calls/replay.",
     ),
     "project.attest_cancel": (
         AttestStatusInput,
@@ -180,7 +211,7 @@ DECLARATIONS: dict[
     ),
     "project.continue": (
         ContinueInput,
-        Continuation,
+        ContinueResponse,
         "read_only",
         (
             "Retrieve a compact continuation packet for fresh-session recovery. "
@@ -191,7 +222,9 @@ DECLARATIONS: dict[
             "selected dependencies/bindings, validation freshness, latest "
             "checkpoint and small delta; omitted_counts identifies further "
             "detail. Maximum packet 32 KiB. Core never invents project next_action. "
-            "Retained reconciliations expose lifecycle next_action and status handles; "
+            "Slow verification returns pending with operation_id: observe "
+            "project.operation_status. Retained mutations, attestations and "
+            "reconciliations expose next_action/status handles; "
             "pending is nonterminal and native work must not be replayed. "
             "Inspect critical open/stale state and real application data "
             "before acting; retrieve targeted project.search details only as "
@@ -223,7 +256,7 @@ DECLARATIONS: dict[
     ),
     "project.apply": (
         ApplyInput,
-        ApplyResult,
+        ApplyResponse,
         "mutating",
         (
             "Atomically apply complete typed records at expected_revision; max256 "
@@ -245,7 +278,10 @@ DECLARATIONS: dict[
             "immutable revision markers, not saves/snapshots; max128. Journal "
             "retains256 revisions/20000 changes; expired deltas require continuation. "
             "Persist meaningful batches, not every primitive; remove unused records "
-            "and forget_checkpoints explicitly."
+            "and forget_checkpoints explicitly. Slow current-evidence verification "
+            "returns pending with operation_id: await project.operation_status. "
+            "A checkpoint requires completed Core reattachment after reopen. "
+            "Do not resubmit a pending batch or treat native attestation as trust."
         ),
     ),
     "project.delta": (
@@ -265,7 +301,7 @@ DECLARATIONS: dict[
     ),
     "project.verify": (
         VerifyInput,
-        ApplyResult,
+        ApplyResponse,
         "mutating",
         (
             "Verify up to64 unique semantic resource bindings through "
@@ -277,6 +313,8 @@ DECLARATIONS: dict[
             "are explicit. Unavailable document context makes old observations "
             "unverified; strong continuity preserves trust through transport "
             "reconnect. New hosts/loads require exact project.attest reattachment. "
+            "Slow verification returns operation_id for project.operation_status; "
+            "pending is nonterminal, without binding publication or resubmission. "
             "Changed fingerprints or untrusted contexts stale related validation. "
             "Fingerprint coverage is limited to the adapter's "
             "declared scope; verification is not geometric/visual/behavioral "

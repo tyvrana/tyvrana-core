@@ -18,16 +18,18 @@ from tyvrana_protocol import (
 )
 
 from .catalog import DECLARATIONS
-from .continuity import AttestInput, AttestStatusInput, Continuity
+from .continuity import OBSERVATION_OWNER, AttestInput, AttestStatusInput, Continuity
 from .models import (
     ApplicationStatus,
     ApplyInput,
+    AttestationHandle,
     BindingObservation,
     ContinueInput,
     CreateInput,
     DeltaInput,
     Document,
     MutationStatusInput,
+    ProjectOperationStatusInput,
     ProjectPatch,
     RemoveInput,
     RemoveResult,
@@ -36,6 +38,7 @@ from .models import (
     VerifyInput,
 )
 from .mutations import WorkingMutations
+from .operations import ProjectOperations
 from .proofs import ProofHosts
 from .reconcile import Reconciliation
 from .reconcile_models import ReconcileInput, ReconcileStatusInput
@@ -54,6 +57,7 @@ class ProjectService:
         self.store = ProjectStore(path)
         self.proofs = ProofHosts(self)
         self.continuity = Continuity(self)
+        self.operations = ProjectOperations(self)
         self.attachments: dict[tuple[str, str], str] = {}
         self.mutations = WorkingMutations(self)
         self.reconciliation = Reconciliation(self)
@@ -65,18 +69,43 @@ class ProjectService:
         *,
         progress: Callable[["AdapterInfo", DocumentAttestationJob, str], None]
         | None = None,
+        diagnostics: bool = False,
     ) -> tuple[dict[str, str], list[ApplicationStatus]]:
         connections: dict[str, str] = {}
         statuses = []
         recovering = self.reconciliation.pending_documents(project_id)
+        recovering.update(
+            j.document_id
+            for j in self.continuity.continuation(project_id)
+            if j.state == "running" and j.document_id is not None
+        )
+        recovering.update(
+            m.document_id
+            for m in await self.mutations.continuation(project_id)
+            if m.state == "pending"
+            and m.document_id is not None
+            and self.mutations.tasks.get(m.mutation_id, (None, None))[1]
+            is not asyncio.current_task()
+        )
+        if any(
+            o.state == "pending" and o.operation in {"project.apply", "project.verify"}
+            for o in self.operations.continuation(project_id)
+        ):
+            recovering.update(d.id for d in self.store.documents(project_id))
         for document in self.store.documents(project_id):
-            resolved = (
-                None
-                if document.id in recovering
-                else await self.continuity.resolve(
-                    project_id, document, progress=progress
+            failure = None
+            try:
+                resolved = (
+                    None
+                    if document.id in recovering
+                    else await self.continuity.resolve(
+                        project_id, document, progress=progress
+                    )
                 )
-            )
+            except ProjectError as exc:
+                if not diagnostics:
+                    raise
+                resolved, failure = None, exc
             baseline = self.continuity.baseline(project_id, document.id)
             if baseline is not None:
                 self.attachments.pop((project_id, document.id), None)
@@ -91,7 +120,26 @@ class ProjectService:
                         application_project_id=document.application_project_id,
                         adapter_ids=[resolved[0].instance_id] if resolved else [],
                         state="connected" if resolved else "unavailable",
-                        locator=None,
+                        locator=document.locator,
+                        trust="current"
+                        if resolved
+                        else "pending"
+                        if document.id in recovering
+                        else "reattachment_required"
+                        if failure and failure.code == "reattachment_required"
+                        else "diverged"
+                        if failure and failure.code == "content_diverged"
+                        else "unverified",
+                        error_code=failure.code if failure else None,
+                        next_action="continue"
+                        if resolved
+                        else "observe_status"
+                        if document.id in recovering
+                        else "project.attest(mode=reattach)"
+                        if failure and failure.code == "reattachment_required"
+                        else "inspect_document",
+                        committed_digest=baseline.digest,
+                        saved_artifact_sha256=baseline.artifact_sha256,
                     )
                 )
                 continue
@@ -187,6 +235,7 @@ class ProjectService:
                     RestoreStatusInput,
                     ReconcileInput,
                     ReconcileStatusInput,
+                    ProjectOperationStatusInput,
                 ),
             )
             connected = {
@@ -194,6 +243,15 @@ class ProjectService:
                 for a in self.core.registry.list()
             }
             project_id = self.store.select(request.project_id, connected)
+            if isinstance(request, ProjectOperationStatusInput):
+                return await self.operations.observe_status(
+                    project_id, request.operation_id, request.wait_seconds
+                )
+            if (
+                isinstance(request, (ApplyInput, ContinueInput, VerifyInput))
+                and OBSERVATION_OWNER.get() is None
+            ):
+                return await self.operations.start(project_id, operation, request)
             if isinstance(request, MutationStatusInput):
                 return await self.mutations.status(project_id, request)
             if operation.endswith("_cancel"):
@@ -212,7 +270,9 @@ class ProjectService:
                     await asyncio.gather(task, return_exceptions=True)
                 return owner.status(project_id, key)
             if isinstance(request, AttestStatusInput):
-                return self.continuity.status(project_id, request.attestation_id)
+                return await self.continuity.observe_status(
+                    project_id, request.attestation_id, request.wait_seconds
+                )
             if isinstance(request, RestoreInput):
                 return await self.restores.start(project_id, request)
             if isinstance(request, RestoreStatusInput):
@@ -225,7 +285,9 @@ class ProjectService:
                 )
             if isinstance(request, AttestInput):
                 return await self.continuity.start(project_id, request)
-            connections, applications = await self.environment(project_id)
+            connections, applications = await self.environment(
+                project_id, diagnostics=True
+            )
             if isinstance(request, RemoveInput):
                 self.store.remove(
                     project_id, request.expected_revision, request.confirm_project_id
@@ -308,11 +370,25 @@ class ProjectService:
                                 connections, applications = await self.environment(
                                     project_id
                                 )
-                            if not await self.continuity.resolve(project_id, document):
+                            if document.id not in connections:
+                                status = next(
+                                    (
+                                        a
+                                        for a in applications
+                                        if a.document_id == document.id
+                                    ),
+                                    None,
+                                )
                                 raise ProjectError(
-                                    "content_diverged",
-                                    "Checkpoint requires a trusted current "
-                                    "working head",
+                                    status.error_code
+                                    if status and status.error_code
+                                    else "content_diverged",
+                                    "Checkpoint requires current trust; complete "
+                                    "reattachment for matching reopened content",
+                                    document_id=document.id,
+                                    next_action=status.next_action
+                                    if status
+                                    else "project.continue",
                                 )
 
                 return self.store.apply(
@@ -352,6 +428,14 @@ class ProjectService:
                     "applications": applications[:8],
                     "notices": notices,
                     "reconciliations": reconciliations,
+                    "mutations": await self.mutations.continuation(project_id),
+                    "attestations": [
+                        AttestationHandle.model_validate(
+                            j.model_dump(include=set(AttestationHandle.model_fields))
+                        )
+                        for j in self.continuity.continuation(project_id)
+                    ],
+                    "operations": self.operations.continuation(project_id),
                 }
             )
             while True:
@@ -371,6 +455,12 @@ class ProjectService:
                     packet.records.pop()
                 elif packet.applications:
                     packet.applications.pop()
+                elif packet.mutations:
+                    packet.mutations.pop()
+                elif packet.attestations:
+                    packet.attestations.pop()
+                elif packet.operations:
+                    packet.operations.pop()
                 elif packet.recent_delta is not None:
                     packet = packet.model_copy(update={"recent_delta": None})
                 else:

@@ -101,6 +101,7 @@ class WorkingMutations:
             reconciled_by=intent.get("reconciled_by"),
             post_state_attested=state == "completed"
             or intent.get("receipt") is not None,
+            persisted_artifact_sha256=intent.get("persisted_artifact_sha256"),
             replay_safe=state == "uncommitted"
             and intent.get("native_execution") == "not_started",
             recovery_operation="project.reconcile"
@@ -116,6 +117,25 @@ class WorkingMutations:
             and intent.get("native_execution") != "not_started"
             else None,
         )
+
+    async def continuation(self, project: str) -> list[MutationStatus]:
+        with self.service.store.transaction() as db:
+            keys = [
+                r[0]
+                for r in db.execute(
+                    "SELECT id FROM document_mutations WHERE project_id=? AND "
+                    "json_extract(data,'$.kind') IS NULL AND "
+                    "json_extract(data,'$.state') IS NOT NULL ORDER BY "
+                    "json_extract(data,'$.state')='pending' DESC,rowid DESC LIMIT 8",
+                    (project,),
+                )
+            ]
+        return [
+            await self.status(
+                project, MutationStatusInput(project_id=project, mutation_id=k)
+            )
+            for k in keys
+        ]
 
     async def execute(
         self, registration: AdapterRegistration, request: OperationRequest, limit: float
@@ -493,7 +513,12 @@ class WorkingMutations:
                         (current.model_dump_json(), project_id),
                     )
                     intent.update(
-                        state="completed", after=receipt.after.digest, revision=revision
+                        state="completed",
+                        after=receipt.after.digest,
+                        revision=revision,
+                        persisted_artifact_sha256=receipt.after.file_sha256
+                        if is_save
+                        else None,
                     )
                     db.execute(
                         "UPDATE document_mutations SET data=? WHERE id=?",

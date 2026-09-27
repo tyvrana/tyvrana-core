@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 from mcp import Client
@@ -275,10 +276,11 @@ async def test_many_bindings_share_document_continuity_check(
 
             async def environment(
                 project_id: str,
+                **kwargs: Any,
             ) -> tuple[dict[str, str], list[ApplicationStatus]]:
                 nonlocal checks
                 checks += 1
-                connections, statuses = await original(project_id)
+                connections, statuses = await original(project_id, **kwargs)
                 if lose_continuity and checks >= 3:
                     connections = {}
                 return connections, statuses
