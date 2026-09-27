@@ -40,7 +40,10 @@ DECLARATIONS: dict[
         MutationStatusInput,
         MutationStatus,
         "read_only",
-        "Observe a mutation_pending receipt using its mutation_id and project_id. "
+        "Observe mutation_pending using its mutation_id and project_id. Pending can "
+        "mean admission attestation is still running: native_execution=not_started "
+        "and admission_attestation identifies the evidence job. Core owns polling; "
+        "do not resubmit save, warm up attestation or repeat reconciliation. "
         "Optionally wait up to 20 seconds without polling or cancelling the work. "
         "Completed means Core committed the qualified receipt at revision, not "
         "artistic acceptance or fresh inspection. Uncommitted/interrupted means "
@@ -87,26 +90,23 @@ DECLARATIONS: dict[
         ReconcileInput,
         ReconcileResult,
         "mutating",
-        "Recover a known working transition without replay in the live application. "
-        "Supply current expected_revision, document/adapter, unaccepted stage_id, "
-        "prior_digest, expected_digest, provenance and reconciliation_id. For a "
-        "retained failed mutation supply mutation_id: a qualified receipt permits "
-        "reconciliation with empty delta. If post-attestation failed and no receipt "
-        "exists, supply its exact delta plus inverse_delta: Core snapshots the live "
-        "document into an owned proof host, applies the inverse there to reproduce "
-        "the complete trusted prior digest/resources, then applies delta there and "
-        "requires exact current digest/resources. Each step names owner_entity_id "
-        "within the stage. Up to 16 steps in each direction. Without inverse_delta, "
-        "replay needs a durable prior artifact. The live document is read-only; "
-        "no force adoption, save or mutation replay. Missing/wrong/stale proof fails "
-        "closed. On success one semantic revision is published; then normal typed "
-        "save can persist the recovered state. Same ID/request is idempotent. "
-        "Running/pending is nonterminal: Core retains and observes the same native "
-        "attestation job, without replay. The result exposes its identity, publication "
-        "state and next_action. Use project.reconcile_status with wait_seconds=20 "
-        "until completed/failed; only completed publishes the head and permits save. "
-        "A 600-second execution deadline or Core interruption fails closed with "
-        "diagnostics; restarting Core does not resume a proof.",
+        "Recover a known transition without live mutation replay. Supply current "
+        "expected_revision, document/adapter, unaccepted stage_id, prior_digest, "
+        "expected_digest, provenance and reconciliation_id. For a failed mutation, "
+        "supply mutation_id: a retained qualified receipt permits empty delta. "
+        "Without a receipt, supply its exact delta and inverse_delta. Core snapshots "
+        "the live document into an owned proof host, applies inverse_delta to prove "
+        "the complete trusted prior digest/resources, then delta to prove exact "
+        "current content. Each step names owner_entity_id within the stage; at most "
+        "16 steps per direction. Without inverse_delta, a durable prior artifact is "
+        "required. Wrong/stale/missing proof fails closed. No force adoption. "
+        "Success publishes one revision and next_action=save. Normal save performs "
+        "fresh admission: mutation_pending is nonterminal; observe "
+        "project.mutation_status, without pre-attestation or a second reconciliation. "
+        "Running/pending reconciliation retains the same attestation job; observe "
+        "project.reconcile_status with wait_seconds up to20. Do not replay native "
+        "work. The600-second execution deadline or Core interruption fails closed; "
+        "restart does not resume proof. Same ID/request is idempotent.",
     ),
     "project.reconcile_status": (
         ReconcileStatusInput,

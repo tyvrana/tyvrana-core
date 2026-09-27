@@ -3,12 +3,14 @@
 import asyncio
 import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ValidationError
 from tyvrana_protocol import (
     AdapterRegistration,
+    DocumentAttestationJob,
     JsonValue,
     ResourceInspectionRequest,
     ResourceInspectionResult,
@@ -42,6 +44,7 @@ from .restore_models import RestoreInput, RestoreStatusInput
 from .store import PACKET_BYTES, ProjectError, ProjectStore
 
 if TYPE_CHECKING:
+    from ..registry import AdapterInfo
     from ..server import AdapterServer
 
 
@@ -57,7 +60,11 @@ class ProjectService:
         self.restores = TrustedRestore(self)
 
     async def environment(
-        self, project_id: str
+        self,
+        project_id: str,
+        *,
+        progress: Callable[["AdapterInfo", DocumentAttestationJob, str], None]
+        | None = None,
     ) -> tuple[dict[str, str], list[ApplicationStatus]]:
         connections: dict[str, str] = {}
         statuses = []
@@ -66,7 +73,9 @@ class ProjectService:
             resolved = (
                 None
                 if document.id in recovering
-                else await self.continuity.resolve(project_id, document)
+                else await self.continuity.resolve(
+                    project_id, document, progress=progress
+                )
             )
             baseline = self.continuity.baseline(project_id, document.id)
             if baseline is not None:

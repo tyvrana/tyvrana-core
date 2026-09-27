@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
@@ -327,7 +328,12 @@ class Continuity:
         return evidence
 
     async def resolve(
-        self, project: str, document: Document
+        self,
+        project: str,
+        document: Document,
+        *,
+        progress: Callable[["AdapterInfo", DocumentAttestationJob, str], None]
+        | None = None,
     ) -> tuple["AdapterInfo", str] | None:
         baseline = self.baseline(project, document.id)
         if baseline is None:
@@ -342,14 +348,36 @@ class Continuity:
             ):
                 continue
             try:
-                evidence = await self.observe(adapter)
+                evidence = (
+                    await self.observe(adapter, progress=partial(progress, adapter))
+                    if progress
+                    else await self.observe(adapter)
+                )
             except ProjectError:
+                if progress:
+                    # Owned admission preserves pending/failed evidence diagnostics.
+                    raise
                 continue
             if (
                 evidence.host_session_id == baseline.host_session_id
                 and evidence.document_session_id == baseline.document_session_id
                 and evidence.format == baseline.format
                 and evidence.digest == baseline.digest
+                and (
+                    not progress
+                    or (
+                        evidence.resource_scope == baseline.resource_scope
+                        and len(evidence.resources) == len(baseline.resources)
+                        and {
+                            (r.resource_kind, r.resource_id): r.model_dump(mode="json")
+                            for r in evidence.resources
+                        }
+                        == {
+                            (r["resource_kind"], r["resource_id"]): r
+                            for r in baseline.resources
+                        }
+                    )
+                )
             ):
                 matches.append(adapter)
         return (matches[0], baseline.context_id) if len(matches) == 1 else None

@@ -94,6 +94,15 @@ async def editor(
                 execution="synchronous",
             ),
             OperationContract(
+                name="editor.file.save",
+                description="Persist native content",
+                tags=("document_save",),
+                arguments_schema={"type": "object"},
+                result_schema={"type": "object"},
+                effect="mutating",
+                execution="synchronous",
+            ),
+            OperationContract(
                 name="editor.file.open",
                 description="Open trusted file",
                 tags=("document_open",),
@@ -185,7 +194,7 @@ async def editor(
                         result.update(
                             state="failed",
                             error=dict(
-                                code="content_changed",
+                                code=faults.get("job_error", "content_changed"),
                                 message="Hash input changed",
                                 details={"resource": "mesh"},
                             ),
@@ -231,21 +240,36 @@ async def editor(
                     assert guard.digest == value["digest"]
                     assert isinstance(guard.arguments, dict)
                     mode = guard.arguments.get("mode")
-                    if mode == "failure":
+                    if mode == "failure" or (faults or {}).get("guard_failure"):
                         result = dict(
                             job_id=guard.mutation_id,
                             state="failed",
-                            error=dict(code="fixture_rollback", message="Rolled back"),
+                            error=dict(
+                                code="content_diverged"
+                                if (faults or {}).get("guard_failure")
+                                else "fixture_rollback",
+                                message="Native guard rejected change"
+                                if (faults or {}).get("guard_failure")
+                                else "Rolled back",
+                            ),
+                            native_execution="not_started",
                         )
                     else:
                         before = copy.deepcopy(value)
+                        if guard.operation == "editor.file.save" and faults is not None:
+                            faults["save_calls"] = faults.get("save_calls", 0) + 1
                         value["digest"] = (
-                            "a"
-                            if mode == "inverse"
-                            else "c"
-                            if mode == "upstream"
-                            else "d"
-                        ) * 64
+                            value["digest"]
+                            if guard.operation == "editor.file.save"
+                            else (
+                                "a"
+                                if mode == "inverse"
+                                else "c"
+                                if mode == "upstream"
+                                else "d"
+                            )
+                            * 64
+                        )
                         if mode == "upstream":
                             value["resources"][0]["fingerprint"] = "changed-base"
                         result = dict(

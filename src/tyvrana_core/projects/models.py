@@ -224,6 +224,15 @@ class MutationStatusInput(ProjectInput):
     wait_seconds: float = Field(default=0, ge=0, le=20, allow_inf_nan=False)
 
 
+class AttestationObservation(Model):
+    adapter_id: Key
+    job_id: Key
+    operation: str
+    state: Literal["queued", "running", "completed", "failed", "cancelled"]
+
+    digest: str | None = None
+
+
 class MutationStatus(Model):
     project_id: Key
     mutation_id: Key
@@ -245,6 +254,25 @@ class MutationStatus(Model):
     replay_safe: bool = False
     recovery_operation: Literal["project.reconcile"] | None = None
     recovery_proof: Literal["receipt", "inverse_delta"] | None = None
+    admission_attestation: AttestationObservation | None = None
+    status_operation: Literal["project.mutation_status"] = "project.mutation_status"
+    wait_seconds: float = 20.0
+    next_action: Literal["observe_status", "inspect_result", "inspect_failure"] = (
+        "observe_status"
+    )
+
+    @model_validator(mode="after")
+    def lifecycle(self) -> Self:
+        object.__setattr__(
+            self,
+            "next_action",
+            "observe_status"
+            if self.state == "pending"
+            else "inspect_result"
+            if self.state == "completed"
+            else "inspect_failure",
+        )
+        return self
 
 
 class ApplyInput(ProjectInput):
@@ -419,13 +447,6 @@ class ApplicationStatus(Model):
     locator: str | None
 
 
-class ReconciliationAttestation(Model):
-    adapter_id: Key
-    job_id: Key
-    operation: str
-    state: Literal["queued", "running", "completed", "failed", "cancelled"]
-
-
 class ReconcileResult(Model):
     reconciliation_id: str
     state: Literal["running", "pending", "completed", "failed"]
@@ -440,7 +461,7 @@ class ReconcileResult(Model):
     ] = "unknown"
     replay_safe: Literal[False] = False
     publication: Literal["uncommitted", "committed"] = "uncommitted"
-    attestation: ReconciliationAttestation | None = None
+    attestation: AttestationObservation | None = None
     next_action: Literal["observe_status", "save", "inspect_failure"] = "observe_status"
     status_operation: Literal["project.reconcile_status"] = "project.reconcile_status"
     wait_seconds: float = 20.0

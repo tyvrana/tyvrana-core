@@ -22,12 +22,12 @@ from tyvrana_protocol import (
 from ..errors import bounded_error, core_failure
 from .continuity import Baseline
 from .models import (
+    AttestationObservation,
     Binding,
     BindingObservation,
     Change,
     Document,
     Milestone,
-    ReconciliationAttestation,
     Validation,
 )
 from .reconcile_models import ReconcileInput, ReconcileResult
@@ -137,7 +137,7 @@ class Reconciliation:
                     state="pending"
                     if job.state in {"queued", "running"}
                     else "running",
-                    attestation=ReconciliationAttestation(
+                    attestation=AttestationObservation(
                         adapter_id=adapter.instance_id,
                         job_id=job.job_id,
                         operation=operation,

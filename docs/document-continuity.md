@@ -179,3 +179,29 @@ replayed in the work document. Same-runtime transport reconnect preserves the jo
 identity; mismatched jobs or document/runtime changes fail closed. Core restart or
 cancellation interrupts the proof without adopting a head; automatic proof resumption
 across Core restart is not supported. A terminal failed ID remains terminal.
+
+
+### Save admission after reconciliation
+
+Reconciliation completion publishes the trusted working head and permits an ordinary
+save attempt. Save still verifies current content; completion is not permission to
+persist a later external edit. No second reconciliation or pre-attestation warm-up
+is required. Core owns admission inside the retained mutation task.
+
+If current evidence takes longer than the client wait, `mutation_pending` identifies
+the original save through `project.mutation_status`. Its `state=pending`,
+`native_execution=not_started`, `admission_attestation` identity and `next_action`
+distinguish waiting for evidence from native execution. Use bounded status waiting;
+do not submit another save while the original is pending. Core retains the same job
+through transport reconnect within a 600-second admission budget. Completed evidence
+must match the trusted host/document, format, digest and scoped resources before
+normal native guarded execution starts. The adapter independently rechecks its
+pre-state and rejects changes during verification. Core does not reuse an earlier
+attestation as a timed admission shortcut.
+
+A real mismatch remains `content_diverged`; failed/incomplete/timed-out verification
+retains its own diagnostic rather than being called divergence. Failed admission
+never starts native save and does not advertise reconciliation of an unexecuted
+operation. Status reads are idempotent. Core restart interrupts retained work;
+it does not restart a save automatically. A completed save identifies the committed
+receipt, not artistic acceptance; reopen and verify persistence normally.

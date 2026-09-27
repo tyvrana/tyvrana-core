@@ -55,6 +55,7 @@ Its reconciliations expose retained recovery handles. Running/pending is nonterm
 Core polls attestation. Follow next_action with project.reconcile_status and bounded
 wait_seconds. Never replay native work or save before completed. Failure retains
 diagnostics; Core restart interrupts proof without adopting a head.
+For mutation_pending saves, await project.mutation_status.
 Save/checkpoint before risky work. Abandon failed branches with
 project.restore(mode="checkout"): preserve history, reset the working head, without
 per-record freshness repair or reacceptance. Shutdown recovery is normal.

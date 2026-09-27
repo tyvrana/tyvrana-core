@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from tyvrana_protocol import (
     AdapterRegistration,
+    DocumentAttestationJob,
     OperationRequest,
     OperationSuccess,
     ResourceReference,
@@ -18,14 +19,23 @@ from tyvrana_protocol.mutations import (
 
 from ..errors import AdapterDisconnected, AdapterNotFound, bounded_error, core_failure
 from .continuity import AttestInput, Baseline
-from .models import Binding, Change, MutationStatus, MutationStatusInput
+from .models import (
+    AttestationObservation,
+    Binding,
+    Change,
+    MutationStatus,
+    MutationStatusInput,
+)
 from .store import ProjectError, now
 
 if TYPE_CHECKING:
+    from ..registry import AdapterInfo
     from .service import ProjectService
 
 
 class WorkingMutations:
+    admission_seconds = 600.0
+
     def __init__(self, service: "ProjectService") -> None:
         self.service = service
         self.lock = asyncio.Lock()
@@ -70,6 +80,11 @@ class WorkingMutations:
             project_id=project_id,
             mutation_id=request.mutation_id,
             state=state,
+            admission_attestation=AttestationObservation.model_validate(
+                intent["admission_attestation"]
+            )
+            if intent.get("admission_attestation")
+            else None,
             document_id=row[0],
             operation=intent["operation"],
             revision=intent["revision"] if state == "completed" else None,
@@ -89,12 +104,16 @@ class WorkingMutations:
             replay_safe=state == "uncommitted"
             and intent.get("native_execution") == "not_started",
             recovery_operation="project.reconcile"
-            if state in {"uncommitted", "interrupted"} and intent.get("before")
+            if state in {"uncommitted", "interrupted"}
+            and intent.get("before")
+            and intent.get("native_execution") != "not_started"
             else None,
             recovery_proof="receipt"
             if intent.get("receipt")
             else "inverse_delta"
-            if intent.get("before") and state in {"uncommitted", "interrupted"}
+            if intent.get("before")
+            and state in {"uncommitted", "interrupted"}
+            and intent.get("native_execution") != "not_started"
             else None,
         )
 
@@ -240,7 +259,43 @@ class WorkingMutations:
                 )
                 baseline = service.continuity.baseline(project_id, document.id)
             assert baseline is not None
-            connections, _ = await service.environment(project_id)
+
+            def progress(
+                adapter: "AdapterInfo", job: DocumentAttestationJob, operation: str
+            ) -> None:
+                observation = AttestationObservation(
+                    adapter_id=adapter.instance_id,
+                    job_id=job.job_id,
+                    operation=operation,
+                    state=job.state,
+                    digest=job.result.digest if job.result else None,
+                )
+                with store.transaction(write=True) as db:
+                    row = db.execute(
+                        "SELECT data FROM document_mutations WHERE id=?",
+                        (request.request_id,),
+                    ).fetchone()
+                    intent = json.loads(row[0])
+                    intent.update(
+                        before=baseline.digest,
+                        admission_attestation=observation.model_dump(),
+                    )
+                    db.execute(
+                        "UPDATE document_mutations SET data=? WHERE id=?",
+                        (json.dumps(intent), request.request_id),
+                    )
+
+            try:
+                async with asyncio.timeout(self.admission_seconds):
+                    connections, _ = await service.environment(
+                        project_id, progress=progress
+                    )
+            except TimeoutError:
+                raise ProjectError(
+                    "admission_timeout",
+                    "Document verification exceeded the admission deadline; "
+                    "native execution did not start",
+                ) from None
             if document.id not in connections:
                 raise ProjectError(
                     "content_diverged", "Working document differs from its trusted head"
@@ -267,7 +322,13 @@ class WorkingMutations:
                         (project_id, document.id),
                     )
                 ]
-            intent: dict[str, Any] = dict(
+            with store.transaction() as db:
+                row = db.execute(
+                    "SELECT data FROM document_mutations WHERE id=?",
+                    (request.request_id,),
+                ).fetchone()
+                intent: dict[str, Any] = json.loads(row[0])
+            intent.update(
                 state="pending",
                 arguments=request.arguments,
                 native_execution="unknown",
