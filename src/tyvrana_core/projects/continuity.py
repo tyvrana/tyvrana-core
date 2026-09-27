@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
@@ -201,7 +202,12 @@ class Continuity:
             ).fetchone()
             return Baseline.model_validate_json(row[0]) if row else None
 
-    async def observe(self, adapter: "AdapterInfo") -> DocumentAttestation:
+    async def observe(
+        self,
+        adapter: "AdapterInfo",
+        *,
+        progress: Callable[[DocumentAttestationJob, str], None] | None = None,
+    ) -> DocumentAttestation:
         contracts = [
             c
             for c in adapter.registration.operations
@@ -234,12 +240,21 @@ class Continuity:
                     "attestation_unsupported",
                     "Observable attestation requires one tagged status contract",
                 )
-            deadline = time.monotonic() + (600 if PROOF_WORKFLOW.get() else 20)
+            deadline = time.monotonic() + (
+                600 if progress or PROOF_WORKFLOW.get() else 20
+            )
+            job_id = observed.job_id
+
+            def report(job: DocumentAttestationJob) -> None:
+                if progress:
+                    progress(job, statuses[0].name)
+
+            report(observed)
             delay = observed.poll_after_seconds
             while observed.state in {"queued", "running"}:
                 if time.monotonic() + delay >= deadline:
                     raise ProjectError(
-                        "attestation_pending",
+                        "attestation_timeout" if progress else "attestation_pending",
                         "Attestation continues as an observable application job; "
                         "inspect its status",
                         job_id=observed.job_id,
@@ -254,20 +269,35 @@ class Continuity:
                             arguments={"job_id": observed.job_id},
                             _internal=True,
                         )
+                except (AdapterDisconnected, AdapterNotFound):
+                    if progress is None:
+                        raise
+                    # Reconnect observes the same job; never start another.
+                    continue
                 except TimeoutError:
                     raise ProjectError(
-                        "attestation_pending",
+                        "attestation_timeout" if progress else "attestation_pending",
                         "Attestation continues as an observable application job; "
                         "inspect its status",
                         job_id=observed.job_id,
                         operation=statuses[0].name,
                     ) from None
                 observed = DocumentAttestationJob.model_validate(response.result)
+                if observed.job_id != job_id:
+                    raise ProjectError(
+                        "attestation_identity",
+                        "Status returned a different attestation job",
+                        expected_job_id=job_id,
+                        received_job_id=observed.job_id,
+                    )
+                report(observed)
                 delay = min(2.0, max(observed.poll_after_seconds, delay * 1.5))
             if observed.state != "completed" or observed.result is None:
                 raise ProjectError(
                     "attestation_incomplete",
                     "Attestation job did not complete",
+                    job_id=job_id,
+                    operation=statuses[0].name,
                     state=observed.state,
                     error=observed.error.model_dump() if observed.error else None,
                 )
@@ -277,8 +307,14 @@ class Continuity:
         current = self.service.core.registry.get(adapter.instance_id)
         if (
             current.connection_id != adapter.connection_id
-            or current.registration.project_id != evidence.project_id
-        ):
+            and not (
+                progress is not None
+                and adapter.registration.runtime is not None
+                and current.registration.runtime == adapter.registration.runtime
+                and current.registration.application == adapter.registration.application
+                and current.catalog_sha256 == adapter.catalog_sha256
+            )
+        ) or current.registration.project_id != evidence.project_id:
             raise ProjectError(
                 "application_changed", "Connection/document changed during attestation"
             )

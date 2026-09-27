@@ -419,6 +419,50 @@ class ApplicationStatus(Model):
     locator: str | None
 
 
+class ReconciliationAttestation(Model):
+    adapter_id: Key
+    job_id: Key
+    operation: str
+    state: Literal["queued", "running", "completed", "failed", "cancelled"]
+
+
+class ReconcileResult(Model):
+    reconciliation_id: str
+    state: Literal["running", "pending", "completed", "failed"]
+    revision: int | None = None
+    digest: str | None = None
+    restored_milestones: list[str] = Field(default_factory=list)
+    already_reconciled: bool = False
+    poll_after_seconds: float = 2.0
+    mutation_id: str | None = None
+    native_execution: Literal[
+        "not_started", "running", "completed", "failed", "unknown"
+    ] = "unknown"
+    replay_safe: Literal[False] = False
+    publication: Literal["uncommitted", "committed"] = "uncommitted"
+    attestation: ReconciliationAttestation | None = None
+    next_action: Literal["observe_status", "save", "inspect_failure"] = "observe_status"
+    status_operation: Literal["project.reconcile_status"] = "project.reconcile_status"
+    wait_seconds: float = 20.0
+    error_code: str | None = None
+    error_message: str | None = None
+    error_details: JsonValue = None
+
+    @model_validator(mode="after")
+    def lifecycle(self) -> Self:
+        # These are consequences of the state, never independent instructions.
+        action = {"completed": "save", "failed": "inspect_failure"}.get(
+            self.state, "observe_status"
+        )
+        object.__setattr__(self, "next_action", action)
+        object.__setattr__(
+            self,
+            "publication",
+            "committed" if self.state == "completed" else "uncommitted",
+        )
+        return self
+
+
 class Continuation(Model):
     project: Project
     stage_state: StageState
@@ -429,6 +473,7 @@ class Continuation(Model):
     applications: list[ApplicationStatus]
     recent_delta: Delta | None
     notices: list[str]
+    reconciliations: list[ReconcileResult] = Field(default_factory=list, max_length=8)
 
 
 class RemoveResult(Model):

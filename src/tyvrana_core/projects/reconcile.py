@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from tyvrana_protocol import (
     DocumentAttestation,
+    DocumentAttestationJob,
     DocumentMutationRequest,
     DocumentMutationResult,
     DocumentState,
@@ -18,8 +19,17 @@ from tyvrana_protocol import (
     ResourceReference,
 )
 
+from ..errors import bounded_error, core_failure
 from .continuity import Baseline
-from .models import Binding, BindingObservation, Change, Document, Milestone, Validation
+from .models import (
+    Binding,
+    BindingObservation,
+    Change,
+    Document,
+    Milestone,
+    ReconciliationAttestation,
+    Validation,
+)
 from .reconcile_models import ReconcileInput, ReconcileResult
 from .store import ProjectError, now
 
@@ -31,6 +41,9 @@ logger = logging.getLogger(__name__)
 
 
 class Reconciliation:
+    caller_wait_seconds = 20.0
+    execution_seconds = 600.0
+
     def __init__(self, service: "ProjectService") -> None:
         self.service = service
         self.tasks: dict[str, asyncio.Task[None]] = {}
@@ -62,10 +75,11 @@ class Reconciliation:
         if data is None:
             raise ProjectError("reconciliation_missing", "Unknown reconciliation")
         result = ReconcileResult.model_validate(data["result"])
-        if result.state == "running" and key not in self.tasks:
+        if result.state in {"running", "pending"} and key not in self.tasks:
             result = result.model_copy(
                 update=dict(
                     state="failed",
+                    next_action="inspect_failure",
                     error_code="reconciliation_interrupted",
                     error_message="Recovery stopped before commit; no head adopted",
                 )
@@ -73,6 +87,68 @@ class Reconciliation:
             data["result"] = result.model_dump()
             self._write(key, data)
         return result
+
+    async def observe_status(
+        self, project: str, key: str, wait_seconds: float
+    ) -> ReconcileResult:
+        self.status(project, key)
+        task = self.tasks.get(key)
+        if task and wait_seconds:
+            await asyncio.wait({task}, timeout=wait_seconds)
+        return self.status(project, key)
+
+    def pending_documents(self, project: str) -> set[str]:
+        with self.service.store.transaction() as db:
+            return {
+                row[0]
+                for row in db.execute(
+                    "SELECT document_id FROM document_mutations WHERE project_id=? "
+                    "AND json_extract(data,'$.kind')='reconciliation' "
+                    "AND json_extract(data,'$.result.state') IN ('running','pending')",
+                    (project,),
+                )
+            }
+
+    def continuation(self, project: str) -> list[ReconcileResult]:
+        with self.service.store.transaction() as db:
+            keys = [
+                row[0]
+                for row in db.execute(
+                    "SELECT id FROM document_mutations WHERE project_id=? "
+                    "AND json_extract(data,'$.kind')='reconciliation' "
+                    "ORDER BY json_extract(data,'$.result.state') "
+                    "IN ('running','pending') DESC, rowid DESC LIMIT 8",
+                    (project,),
+                )
+            ]
+        # Full diagnostics stay on the status operation, outside the compact packet.
+        return [
+            self.status(project, key).model_copy(update={"error_details": None})
+            for key in keys
+        ]
+
+    async def _observe(
+        self, adapter: "AdapterInfo", request: ReconcileInput, data: dict[str, Any]
+    ) -> DocumentAttestation:
+        def progress(job: DocumentAttestationJob, operation: str) -> None:
+            result = ReconcileResult.model_validate(data["result"])
+            result = result.model_copy(
+                update=dict(
+                    state="pending"
+                    if job.state in {"queued", "running"}
+                    else "running",
+                    attestation=ReconciliationAttestation(
+                        adapter_id=adapter.instance_id,
+                        job_id=job.job_id,
+                        operation=operation,
+                        state=job.state,
+                    ),
+                )
+            )
+            data["result"] = result.model_dump()
+            self._write(request.reconciliation_id, data)
+
+        return await self.service.continuity.observe(adapter, progress=progress)
 
     async def start(self, project: str, request: ReconcileInput) -> ReconcileResult:
         encoded = request.model_dump_json()
@@ -109,7 +185,9 @@ class Reconciliation:
                 request=request.model_dump(mode="json"),
                 receipts=[],
                 result=ReconcileResult(
-                    reconciliation_id=request.reconciliation_id, state="running"
+                    reconciliation_id=request.reconciliation_id,
+                    state="running",
+                    mutation_id=request.mutation_id,
                 ).model_dump(),
             )
             db.execute(
@@ -127,7 +205,7 @@ class Reconciliation:
             lambda _: self.tasks.pop(request.reconciliation_id, None)
         )
         try:
-            async with asyncio.timeout(20):
+            async with asyncio.timeout(self.caller_wait_seconds):
                 await asyncio.shield(task)
         except TimeoutError:
             pass  # Retained work; repeating the request does not duplicate replay.
@@ -344,24 +422,34 @@ class Reconciliation:
         self, project: str, request: ReconcileInput, data: dict[str, Any]
     ) -> None:
         try:
-            async with self.service.mutations.lock, asyncio.timeout(600):
+            async with (
+                self.service.mutations.lock,
+                asyncio.timeout(self.execution_seconds),
+            ):
                 await self._prove(project, request, data)
         except BaseException as exc:
             if isinstance(exc, ProjectError):
-                code, message = exc.code, str(exc)
-            elif isinstance(exc, asyncio.CancelledError):
-                code, message = (
-                    "reconciliation_interrupted",
-                    "Recovery stopped without committing a working head",
+                error = bounded_error(exc.code, str(exc), exc.details)
+            elif isinstance(exc, (asyncio.CancelledError, TimeoutError)):
+                error = bounded_error(
+                    "reconciliation_interrupted"
+                    if isinstance(exc, asyncio.CancelledError)
+                    else "reconciliation_timeout",
+                    "Recovery stopped without committing a working head; "
+                    "native work must not be replayed",
                 )
             else:
                 logger.exception("Reconciliation failed before commit")
-                code, message = "reconciliation_failed", str(exc)[:512]
-            data["result"] = ReconcileResult(
-                reconciliation_id=request.reconciliation_id,
-                state="failed",
-                error_code=code,
-                error_message=message,
+                error = core_failure(exc)
+            result = ReconcileResult.model_validate(data["result"])
+            data["result"] = result.model_copy(
+                update=dict(
+                    state="failed",
+                    next_action="inspect_failure",
+                    error_code=error.code,
+                    error_message=error.message,
+                    error_details=error.details,
+                )
             ).model_dump()
             self._write(request.reconciliation_id, data)
 
@@ -376,6 +464,15 @@ class Reconciliation:
             )
         parent = self.service.core.registry.get(request.adapter_id)
         retained = self._mutation(project, request, baseline)
+        result = ReconcileResult.model_validate(data["result"])
+        data["result"] = result.model_copy(
+            update={
+                "native_execution": "completed"
+                if retained and retained.get("receipt")
+                else (retained or {}).get("native_execution", "unknown")
+            }
+        ).model_dump()
+        self._write(request.reconciliation_id, data)
         if retained and retained.get("receipt"):
             await self._prove_receipt(project, request, data, baseline, retained)
             return
@@ -387,7 +484,7 @@ class Reconciliation:
             )
         artifact: ProofArtifact | DocumentState
         if request.inverse_delta:
-            current = await self.service.continuity.observe(parent)
+            current = await self._observe(parent, request, data)
             self._same_document(current, baseline, live=True)
             if current.digest != request.expected_digest:
                 raise ProjectError(
@@ -489,7 +586,7 @@ class Reconciliation:
                 "Receipt resource pre-state differs from trusted evidence",
             )
         live = self.service.core.registry.get(request.adapter_id)
-        current = await self.service.continuity.observe(live)
+        current = await self._observe(live, request, data)
         self._same_document(current, baseline, live=True)
         if (
             current.digest != receipt.after.digest
@@ -563,14 +660,14 @@ class Reconciliation:
                     "Delta operation is not qualified for isolated recovery replay",
                     operation=step.operation,
                 )
-        current = await service.continuity.observe(live)
+        current = await self._observe(live, request, data)
         self._same_document(current, baseline, live=True)
         if current.digest != request.expected_digest:
             raise ProjectError(
                 "reconciliation_delta_mismatch",
                 "Live content differs from the declared exact result",
             )
-        previous = await service.continuity.observe(proof)
+        previous = await self._observe(proof, request, data)
         self._same_document(previous, baseline, live=False)
         if request.inverse_delta:
             data["snapshot_proof"] = previous.model_dump(mode="json")
@@ -731,7 +828,7 @@ class Reconciliation:
                 "Trusted prior head plus declared delta does not "
                 "explain the complete live content",
             )
-        final = await service.continuity.observe(live)
+        final = await self._observe(live, request, data)
         self._same_document(final, baseline, live=True)
         if (
             final.digest != previous.digest
@@ -919,6 +1016,13 @@ class Reconciliation:
             data["result"] = ReconcileResult(
                 reconciliation_id=request.reconciliation_id,
                 state="completed",
+                mutation_id=request.mutation_id,
+                native_execution=ReconcileResult.model_validate(
+                    data["result"]
+                ).native_execution,
+                attestation=ReconcileResult.model_validate(data["result"]).attestation,
+                publication="committed",
+                next_action="save",
                 revision=revision,
                 digest=final.digest,
                 restored_milestones=sorted(stages),

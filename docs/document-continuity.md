@@ -162,5 +162,20 @@ then persist the proven working head.
 
 The request supplies current `expected_revision`, document/adapter, target stage,
 prior and expected digests, provenance, and a unique reconciliation ID. An identical
-request is idempotent. Observe running work with `project.reconcile_status`; a
-completed response identifies historical reconciliation, not a new live attestation.
+request is idempotent. `running` and `pending` are nonterminal. A pending result
+retains the adapter and attestation job identity, native execution outcome,
+`replay_safe=false`, and `publication=uncommitted`. Core keeps observing that same
+job within the reconciliation's 600-second execution deadline; the 20-second client
+wait is not a job deadline. Follow `next_action=observe_status` using
+`project.reconcile_status` and `wait_seconds` up to 20. No resubmission is needed.
+`project.continue` exposes up to eight recent reconciliation handles, prioritizing
+nonterminal work, without starting duplicate attestation on recovering documents.
+
+Only `completed` commits a semantic revision and returns `next_action=save`.
+Normal guarded save can then persist the recovered state. Completion is historical
+proof, not a new live attestation. Failure retains bounded structured diagnostics
+and never permits unsafe save. Status reads are idempotent; native mutation is never
+replayed in the work document. Same-runtime transport reconnect preserves the job
+identity; mismatched jobs or document/runtime changes fail closed. Core restart or
+cancellation interrupts the proof without adopting a head; automatic proof resumption
+across Core restart is not supported. A terminal failed ID remains terminal.

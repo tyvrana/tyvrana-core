@@ -101,13 +101,20 @@ DECLARATIONS: dict[
         "no force adoption, save or mutation replay. Missing/wrong/stale proof fails "
         "closed. On success one semantic revision is published; then normal typed "
         "save can persist the recovered state. Same ID/request is idempotent. "
-        "Observe running work with project.reconcile_status.",
+        "Running/pending is nonterminal: Core retains and observes the same native "
+        "attestation job, without replay. The result exposes its identity, publication "
+        "state and next_action. Use project.reconcile_status with wait_seconds=20 "
+        "until completed/failed; only completed publishes the head and permits save. "
+        "A 600-second execution deadline or Core interruption fails closed with "
+        "diagnostics; restarting Core does not resume a proof.",
     ),
     "project.reconcile_status": (
         ReconcileStatusInput,
         ReconcileResult,
         "read_only",
-        "Observe bounded guarded reconciliation by ID. Completed "
+        "Observe retained reconciliation by ID; wait_seconds (0..20) waits without "
+        "resubmitting or cancelling work. Pending is nonterminal attestation; "
+        "follow next_action and never replay the native mutation. Completed "
         "results identify the historical "
         "commit, not a new live attestation. Do not resubmit a "
         "different delta under the same ID.",
@@ -183,7 +190,9 @@ DECLARATIONS: dict[
             "deterministic bounded current meaning, progress, issues, "
             "selected dependencies/bindings, validation freshness, latest "
             "checkpoint and small delta; omitted_counts identifies further "
-            "detail. Maximum packet 32 KiB. Core never invents next_action. "
+            "detail. Maximum packet 32 KiB. Core never invents project next_action. "
+            "Retained reconciliations expose lifecycle next_action and status handles; "
+            "pending is nonterminal and native work must not be replayed. "
             "Inspect critical open/stale state and real application data "
             "before acting; retrieve targeted project.search details only as "
             "needed. Application geometry stays authoritative in its "

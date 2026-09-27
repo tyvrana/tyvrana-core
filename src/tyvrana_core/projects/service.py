@@ -61,8 +61,13 @@ class ProjectService:
     ) -> tuple[dict[str, str], list[ApplicationStatus]]:
         connections: dict[str, str] = {}
         statuses = []
+        recovering = self.reconciliation.pending_documents(project_id)
         for document in self.store.documents(project_id):
-            resolved = await self.continuity.resolve(project_id, document)
+            resolved = (
+                None
+                if document.id in recovering
+                else await self.continuity.resolve(project_id, document)
+            )
             baseline = self.continuity.baseline(project_id, document.id)
             if baseline is not None:
                 self.attachments.pop((project_id, document.id), None)
@@ -206,7 +211,9 @@ class ProjectService:
             if isinstance(request, ReconcileInput):
                 return await self.reconciliation.start(project_id, request)
             if isinstance(request, ReconcileStatusInput):
-                return self.reconciliation.status(project_id, request.reconciliation_id)
+                return await self.reconciliation.observe_status(
+                    project_id, request.reconciliation_id, request.wait_seconds
+                )
             if isinstance(request, AttestInput):
                 return await self.continuity.start(project_id, request)
             connections, applications = await self.environment(project_id)
@@ -324,8 +331,19 @@ class ProjectService:
                     "Unavailable bound documents require inspection before "
                     "relying on their bindings/validation."
                 )
+            reconciliations = self.reconciliation.continuation(project_id)
+            if any(r.state in {"running", "pending"} for r in reconciliations):
+                notices.append(
+                    "Reconciliation is nonterminal. Do not replay native mutations or "
+                    "save. Observe its status with the supplied identity and bounded "
+                    "wait; Core owns attestation polling."
+                )
             packet = packet.model_copy(
-                update={"applications": applications[:8], "notices": notices}
+                update={
+                    "applications": applications[:8],
+                    "notices": notices,
+                    "reconciliations": reconciliations,
+                }
             )
             while True:
                 selected: Counter[str] = Counter(r.record.kind for r in packet.records)

@@ -11,7 +11,8 @@ import pytest
 from tyvrana_protocol import (
     AdapterEvent,
     AdapterRegistration,
-    DocumentAttestation,
+    DocumentAttestationJob,
+    DocumentAttestationResponse,
     DocumentRestoreJob,
     DocumentRestoreRequest,
     OperationContract,
@@ -70,9 +71,18 @@ async def editor(
                 description="Strong evidence",
                 tags=("document_attestation",),
                 arguments_schema={"type": "object"},
-                result_schema=DocumentAttestation.model_json_schema(),
+                result_schema=DocumentAttestationResponse.model_json_schema(),
                 effect="read_only",
                 execution="synchronous",
+            ),
+            OperationContract(
+                name="editor.attest_status",
+                description="Observe evidence job",
+                tags=("document_attestation_status",),
+                effect="read_only",
+                execution="job_status",
+                arguments_schema={"type": "object"},
+                result_schema=DocumentAttestationJob.model_json_schema(),
             ),
             OperationContract(
                 name="editor.change",
@@ -154,6 +164,34 @@ async def editor(
                     result = await lifecycle.respond(request)
                 elif request.operation == "editor.document.attest":
                     result = copy.deepcopy(value)
+                    if faults is not None and faults.get("pending"):
+                        faults["starts"] = faults.get("starts", 0) + 1
+                        result = dict(
+                            job_id="attestation-job",
+                            state="running",
+                            poll_after_seconds=0.1,
+                        )
+                elif request.operation == "editor.attest_status":
+                    assert faults is not None and request.arguments == {
+                        "job_id": "attestation-job"
+                    }
+                    faults["polls"] = faults.get("polls", 0) + 1
+                    result = dict(
+                        job_id="wrong" if faults.get("wrong_id") else "attestation-job",
+                        state="running",
+                        poll_after_seconds=0.1,
+                    )
+                    if faults.get("failure"):
+                        result.update(
+                            state="failed",
+                            error=dict(
+                                code="content_changed",
+                                message="Hash input changed",
+                                details={"resource": "mesh"},
+                            ),
+                        )
+                    elif faults.get("release"):
+                        result.update(state="completed", result=copy.deepcopy(value))
                 elif request.operation == "editor.document.restore":
                     restore = DocumentRestoreRequest.model_validate(request.arguments)
                     if restores is not None:
@@ -187,6 +225,8 @@ async def editor(
                             ),
                         )
                 else:
+                    if faults is not None:
+                        faults["native_calls"] = faults.get("native_calls", 0) + 1
                     guard = DocumentMutationRequest.model_validate(request.arguments)
                     assert guard.digest == value["digest"]
                     assert isinstance(guard.arguments, dict)

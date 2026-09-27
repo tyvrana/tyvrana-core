@@ -1,11 +1,12 @@
 """Explicit, bounded recovery of a known missing working mutation receipt."""
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import Field, model_validator
 from tyvrana_protocol import JsonValue, QualifiedName
 
 from .models import Key, Model, ProjectInput
+from .models import ReconcileResult as ReconcileResult
 
 
 class ReplayStep(Model):
@@ -41,14 +42,4 @@ class ReconcileInput(ProjectInput):
 class ReconcileStatusInput(ProjectInput):
     reconciliation_id: Key
 
-
-class ReconcileResult(Model):
-    reconciliation_id: str
-    state: Literal["running", "completed", "failed"]
-    revision: int | None = None
-    digest: str | None = None
-    restored_milestones: list[str] = Field(default_factory=list)
-    already_reconciled: bool = False
-    poll_after_seconds: float = 2.0
-    error_code: str | None = None
-    error_message: str | None = None
+    wait_seconds: float = Field(default=0.0, ge=0, le=20)

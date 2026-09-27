@@ -51,6 +51,10 @@ its authoring targets. Exploratory work stays provisional within that stage; acc
 only after observing required evidence, then advance. Repair stale prerequisites or
 blocking issues before dependent work; reopen the upstream stage before changing it.
 Simple unbound one-step edits need no contract. Use project.continue for recovery.
+Its reconciliations expose retained recovery handles. Running/pending is nonterminal;
+Core polls attestation. Follow next_action with project.reconcile_status and bounded
+wait_seconds. Never replay native work or save before completed. Failure retains
+diagnostics; Core restart interrupts proof without adopting a head.
 Save/checkpoint before risky work. Abandon failed branches with
 project.restore(mode="checkout"): preserve history, reset the working head, without
 per-record freshness repair or reacceptance. Shutdown recovery is normal.
