@@ -548,7 +548,10 @@ class Reconciliation:
         ):
             raise ProjectError(
                 "reconciliation_mutation",
-                "Declared delta differs from the recorded mutation",
+                "Declared delta differs from the recorded mutation; retrieve its "
+                "exact arguments from project.mutation_status without replay",
+                mutation_id=request.mutation_id,
+                status_operation="project.mutation_status",
             )
         return intent
 

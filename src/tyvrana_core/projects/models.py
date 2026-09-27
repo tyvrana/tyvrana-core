@@ -239,6 +239,7 @@ class MutationStatus(Model):
     state: Literal["pending", "completed", "uncommitted", "interrupted"]
     document_id: Key | None = None
     operation: str | None = None
+    arguments: dict[str, JsonValue] | None = None
     revision: int | None = None
     error_code: str | None = None
     error_message: Annotated[str, Field(max_length=1024)] | None = None

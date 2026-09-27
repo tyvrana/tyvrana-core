@@ -89,6 +89,12 @@ async def test_retained_receipt_recovery(
                 key, MutationStatusInput(project_id=key, mutation_id=mutation_id)
             )
             assert status.state == "uncommitted"
+            assert status.arguments == {"mode": "downstream"}
+            compact = await core.projects.mutations.continuation(key)
+            assert (
+                next(m for m in compact if m.mutation_id == mutation_id).arguments
+                is None
+            )
             assert status.native_execution == "completed"
             assert status.post_state_attested and not status.replay_safe
             assert status.recovery_operation == "project.reconcile"

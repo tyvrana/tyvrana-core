@@ -73,8 +73,10 @@ DECLARATIONS: dict[
         "A completed native result must not be replayed. recovery_operation and "
         "recovery_proof identify reconciliation using a retained receipt or isolated "
         "inverse-delta proof. before_digest, after_digest and stage_id identify "
-        "the transition. No original operation output is exposed "
-        "here; use its domain inspection for output details. No application calls.",
+        "the transition. arguments exposes the exact recorded request for correlated "
+        "recovery; do not guess its delta or execute it again. Compact continuation "
+        "omits arguments: retrieve this status when needed. No original output is "
+        "exposed here; use domain inspection for output details. No application calls.",
     ),
     "project.restore": (
         RestoreInput,

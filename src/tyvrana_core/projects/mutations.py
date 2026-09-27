@@ -87,6 +87,7 @@ class WorkingMutations:
             else None,
             document_id=row[0],
             operation=intent["operation"],
+            arguments=intent.get("arguments"),
             revision=intent["revision"] if state == "completed" else None,
             error_code=intent.get("error_code"),
             error_message=intent.get("error_message"),
@@ -131,9 +132,11 @@ class WorkingMutations:
                 )
             ]
         return [
-            await self.status(
-                project, MutationStatusInput(project_id=project, mutation_id=k)
-            )
+            (
+                await self.status(
+                    project, MutationStatusInput(project_id=project, mutation_id=k)
+                )
+            ).model_copy(update={"arguments": None})
             for k in keys
         ]
 

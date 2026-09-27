@@ -246,3 +246,10 @@ with retained work. A new client can resume pending status from these handles,
 inspect failures without blind replay, and recover ordinary project meaning from
 the checkpoint. A successful checkpoint is a semantic revision marker, not another
 native save or artistic acceptance.
+
+Mutation status also exposes the exact recorded `operation` and `arguments` for
+correlated recovery. A fresh client must not reconstruct an exact delta by guessing
+defaults from scene inspection, nor replay the request on the work document.
+Compact continuation omits arguments; fetch the individual mutation status when
+recovery needs them. Inspection still establishes actual native state, and the
+independent proof must verify the proposed inverse/forward transition.
