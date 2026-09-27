@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from tyvrana_protocol import (
     AdapterRegistration,
+    DocumentState,
     ProofArtifact,
     ProofHostControl,
     ProofHostStart,
@@ -60,7 +61,14 @@ class ProofHosts:
             or identity.parent_adapter_id != lease.parent.instance_id
             or runtime.build != lease.request.expected_build
             or registration.application != lease.parent.registration.application
-            or registration.project_id != lease.request.artifact.project_id
+            or registration.project_id
+            != (
+                lease.request.artifact.project_id
+                if lease.request.artifact
+                else lease.request.snapshot.project_id
+                if lease.request.snapshot
+                else None
+            )
             or (
                 lease.parent.registration.runtime is not None
                 and runtime.process_id == lease.parent.registration.runtime.process_id
@@ -137,7 +145,7 @@ class ProofHosts:
 
     @asynccontextmanager
     async def acquire(
-        self, parent: AdapterInfo, artifact: ProofArtifact
+        self, parent: AdapterInfo, artifact: ProofArtifact | DocumentState
     ) -> AsyncIterator[AdapterInfo]:
         runtime = parent.registration.runtime
         if runtime is None or runtime.role != "work":
@@ -160,7 +168,8 @@ class ProofHosts:
                 token=secrets.token_hex(32),
                 parent_adapter_id=parent.instance_id,
             ),
-            artifact=artifact,
+            artifact=artifact if isinstance(artifact, ProofArtifact) else None,
+            snapshot=artifact if isinstance(artifact, DocumentState) else None,
             expected_build=runtime.build,
             ttl_seconds=min(900, int(self.workflow_timeout) + 60),
         )

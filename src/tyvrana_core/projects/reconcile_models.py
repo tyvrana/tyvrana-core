@@ -23,10 +23,16 @@ class ReconcileInput(ProjectInput):
     prior_digest: Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
     expected_digest: Annotated[str, Field(pattern="^[0-9a-f]{64}$")]
     provenance: str = Field(min_length=1, max_length=2048, pattern=r"\S")
-    delta: list[ReplayStep] = Field(min_length=1, max_length=16)
+    mutation_id: Key | None = None
+    delta: list[ReplayStep] = Field(default_factory=list, max_length=16)
+    inverse_delta: list[ReplayStep] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
     def independent(self) -> "ReconcileInput":
+        if not self.delta and (self.mutation_id is None or self.inverse_delta):
+            raise ValueError("Provide a known delta or a retained mutation receipt")
+        if self.inverse_delta and self.mutation_id is None:
+            raise ValueError("Inverse proof requires a correlated mutation identity")
         if self.prior_digest == self.expected_digest:
             raise ValueError("Recovery requires a declared content transition")
         return self

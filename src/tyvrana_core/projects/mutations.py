@@ -76,6 +76,26 @@ class WorkingMutations:
             error_code=intent.get("error_code"),
             error_message=intent.get("error_message"),
             error_details=intent.get("error_details"),
+            native_execution="completed"
+            if state == "completed"
+            else intent.get("native_execution", "unknown"),
+            before_digest=intent.get("before"),
+            after_digest=intent.get("after")
+            or (intent.get("receipt") or {}).get("after", {}).get("digest"),
+            stage_id=intent.get("stage"),
+            reconciled_by=intent.get("reconciled_by"),
+            post_state_attested=state == "completed"
+            or intent.get("receipt") is not None,
+            replay_safe=state == "uncommitted"
+            and intent.get("native_execution") == "not_started",
+            recovery_operation="project.reconcile"
+            if state in {"uncommitted", "interrupted"} and intent.get("before")
+            else None,
+            recovery_proof="receipt"
+            if intent.get("receipt")
+            else "inverse_delta"
+            if intent.get("before") and state in {"uncommitted", "interrupted"}
+            else None,
         )
 
     async def execute(
@@ -109,6 +129,8 @@ class WorkingMutations:
                             operation=request.operation,
                             stage=project.stage,
                             revision=project.revision,
+                            arguments=request.arguments,
+                            native_execution="not_started",
                             before=None,
                             after=None,
                         )
@@ -167,6 +189,15 @@ class WorkingMutations:
                 project_id=project.id,
                 status_operation="project.mutation_status",
             ) from None
+        except ProjectError as error:
+            raise ProjectError(
+                error.code,
+                str(error),
+                mutation_id=request.request_id,
+                project_id=project.id,
+                status_operation="project.mutation_status",
+                cause=error.details,
+            ) from error
 
     async def _execute(
         self,
@@ -238,6 +269,8 @@ class WorkingMutations:
                 ]
             intent: dict[str, Any] = dict(
                 state="pending",
+                arguments=request.arguments,
+                native_execution="unknown",
                 operation=request.operation,
                 stage=project.stage,
                 revision=project.revision,
@@ -310,6 +343,17 @@ class WorkingMutations:
                     if before.get((b.resource_kind, b.resource_id))
                     != after.get((b.resource_kind, b.resource_id))
                 }
+                # Persist the qualified native receipt BEFORE semantic publication.
+                # A publication failure must not erase proof of already-executed work.
+                intent.update(
+                    native_execution="completed",
+                    receipt=receipt.model_dump(mode="json"),
+                )
+                with store.transaction(write=True) as db:
+                    db.execute(
+                        "UPDATE document_mutations SET data=? WHERE id=?",
+                        (json.dumps(intent), request.request_id),
+                    )
                 with store.transaction(write=True) as db:
                     current = store.project(db, project_id)
                     store.expect(current, project.revision)
@@ -400,8 +444,14 @@ class WorkingMutations:
                     result=receipt.result,
                 )
             except BaseException:
-                intent["state"] = "uncommitted"
                 with store.transaction(write=True) as db:
+                    saved = db.execute(
+                        "SELECT data FROM document_mutations WHERE id=?",
+                        (request.request_id,),
+                    ).fetchone()
+                    if saved:
+                        intent.update(json.loads(saved[0]))
+                    intent["state"] = "uncommitted"
                     db.execute(
                         "UPDATE document_mutations SET data=? WHERE id=?",
                         (json.dumps(intent), request.request_id),
@@ -436,6 +486,7 @@ class WorkingMutations:
             _internal=True,
         )
         job = DocumentMutationJob.model_validate(response.result)
+        self._retain_execution(args.mutation_id, job)
         delay = job.poll_after_seconds
         async with asyncio.timeout(180):
             while job.state in {"queued", "running"}:
@@ -457,6 +508,7 @@ class WorkingMutations:
                     except (AdapterNotFound, AdapterDisconnected):
                         await registry.wait_for_change(revision, 180)
                 job = DocumentMutationJob.model_validate(response.result)
+                self._retain_execution(args.mutation_id, job)
                 delay = min(2.0, delay * 1.5)
         if job.state != "completed" or job.result is None:
             if job.error is not None:
@@ -466,3 +518,23 @@ class WorkingMutations:
                 job.error.message if job.error else "Native mutation did not complete",
             )
         return job.result
+
+    def _retain_execution(self, mutation_id: str, job: DocumentMutationJob) -> None:
+        if job.job_id != mutation_id:
+            raise ProjectError(
+                "mutation_receipt_invalid", "Native job correlation mismatch"
+            )
+        with self.service.store.transaction(write=True) as db:
+            row = db.execute(
+                "SELECT data FROM document_mutations WHERE id=?", (mutation_id,)
+            ).fetchone()
+            if row is None:
+                return  # Independent proof work has its own reconciliation ledger.
+            intent = json.loads(row[0])
+            intent["native_execution"] = (
+                "completed" if job.result else job.native_execution
+            )
+            db.execute(
+                "UPDATE document_mutations SET data=? WHERE id=?",
+                (json.dumps(intent), mutation_id),
+            )

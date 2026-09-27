@@ -234,6 +234,17 @@ class MutationStatus(Model):
     error_code: str | None = None
     error_message: Annotated[str, Field(max_length=1024)] | None = None
     error_details: JsonValue = None
+    native_execution: Literal["not_started", "started", "completed", "unknown"] = (
+        "unknown"
+    )
+    before_digest: str | None = None
+    after_digest: str | None = None
+    stage_id: str | None = None
+    reconciled_by: Key | None = None
+    post_state_attested: bool = False
+    replay_safe: bool = False
+    recovery_operation: Literal["project.reconcile"] | None = None
+    recovery_proof: Literal["receipt", "inverse_delta"] | None = None
 
 
 class ApplyInput(ProjectInput):

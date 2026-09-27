@@ -199,7 +199,13 @@ async def editor(
                         )
                     else:
                         before = copy.deepcopy(value)
-                        value["digest"] = ("c" if mode == "upstream" else "d") * 64
+                        value["digest"] = (
+                            "a"
+                            if mode == "inverse"
+                            else "c"
+                            if mode == "upstream"
+                            else "d"
+                        ) * 64
                         if mode == "upstream":
                             value["resources"][0]["fingerprint"] = "changed-base"
                         result = dict(

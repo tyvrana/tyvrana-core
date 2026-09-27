@@ -298,7 +298,7 @@ Messages are limited to 1024 characters; JSON details to 16 KiB (oversized detai
 are explicitly marked truncated). Immediate MCP failures use the same bounds.
 Unknown internal exceptions expose only a generic error, never exception dumps.
 Historical intents may lack diagnostics; status reads do not rewrite them.
-Use domain inspection for successful output details; this operation retains no
+Use domain inspection for successful output details; this operation exposes no
 original operation result and makes no application calls.
 
 Registry waits observe registration changes, not mutation completion. Check the
@@ -306,3 +306,11 @@ required adapter/document/path predicate first; wait from the observed revision
 only while that predicate is unsatisfied. A save to the existing path or reopening
 the same path need not change the catalog or registry metadata. Strong document
 verification still distinguishes a new load from an unchanged registration.
+
+
+Native execution and semantic publication are separate. Mutation status includes
+`native_execution`, `post_state_attested`, `replay_safe`, transition digests, stage,
+and the applicable `recovery_operation`/`recovery_proof`. Qualified native receipts
+survive failed semantic publication. Use `project.reconcile` with the original
+mutation ID; its contract describes retained-receipt and isolated inverse/forward
+proof. Unknown or completed native work must not be blindly replayed.

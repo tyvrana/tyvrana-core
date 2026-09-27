@@ -122,44 +122,45 @@ A checked-out branch inherits acceptance metadata from its exact revision, exclu
 acceptance acquired only on the abandoned branch. Reading historical evidence never
 restores current validity or changes semantic revision.
 
-## Recovering a known transition without a receipt
+## Recovering a native result after failed publication
 
-`project.reconcile` is guarded recovery for work authored before mutation receipts
-were available. It does not accept a milestone or adopt arbitrary current content.
-Use normal authoring operations for new work.
+`project.mutation_status` separates `native_execution` from semantic `state`.
+Native execution can be `not_started`, `started`, `completed`, or `unknown`.
+Only semantic `completed` identifies a published revision. A failure response
+includes the mutation/project IDs and status operation. Status reports exact
+before/after digests when known, stage, whether post-state proof exists, and
+whether replay is safe. Never replay completed or uncertain native work.
 
-Provide the durable prior working digest, expected current digest, an unaccepted
-working stage, provenance, and a unique reconciliation ID. The explicit delta is
-at most 16 advertised typed operations (128 KiB total request); each step declares
-its owning entity in that stage. Raw geometry is not needed.
+Core retains validated native receipts durably before semantic publication.
+For a failed publication, `project.reconcile` accepts the original `mutation_id`
+and an empty delta when that receipt exists. It reobserves live state and checks
+exact document identity, trusted pre-state, resource scope, and post-state. A
+receipt from another mutation, stale content, or changed protected resources
+cannot authorize recovery.
 
-Core leases a disposable proof host from the selected work adapter. The adapter opens
-the durable prior artifact locator and verifies its SHA256 before registration.
-Core requires the same logical document, format and implementation build, a different
-background process, and the exact issued lease. Only synchronous, artifact-free
-operations tagged `recovery_replay` may run through guarded mutation receipts there.
-The live document is read-only. Core releases the proof process after every outcome;
-clients never prepare, select, reset or terminate proof applications.
+If post-attestation failed, no complete receipt exists. Supply the original
+`mutation_id`, exact `delta`, and `inverse_delta`. Core creates an owned disposable
+snapshot host. The loaded copy must first equal live content and resource identity.
+The inverse runs only there and must reproduce the entire trusted prior digest and
+resource evidence. The forward delta then runs only there and must reproduce the
+entire current live digest and resources. A final live observation must still agree.
+The snapshot is untrusted input, never permission to adopt arbitrary divergence.
+No save, inverse, or forward operation runs in the live document during recovery.
 
-Core requires the complete replayed content digest and scoped resource observations
-to equal the fresh live result exactly. Extra objects, unexplained material edits,
-and mismatched operation parameters therefore reject recovery. Bound resources
-outside the working stage are protected, including prerequisite dependency
-closures. Retained acceptance history must show unchanged semantic claims; only
-recorded freshness invalidation may be restored. This operation currently proves
-one document, and rejects prerequisites needing evidence from another document.
-Missing history, incomplete attestation, resource drift and wrong lineage fail
-closed. There is no force or trust-current option.
+Each typed step names an `owner_entity_id` within the unaccepted target stage.
+Only synchronous, artifact-free operations tagged `recovery_replay` qualify.
+There are at most 16 steps per direction. Without inverse proof, a delta can still
+be proven from the exact durable prior artifact; unsaved working heads generally
+have no such artifact. Missing proof fails closed.
 
-Success atomically advances project revision once, stores the correlated replay
-proof, restores only proved prerequisite freshness, activates the unaccepted
-working stage, and establishes its new trusted working digest. Historical
-acceptance revisions and snapshots remain unchanged. Ordinary mutation receipts,
-saving and working checkpoints resume afterward.
+Recovery also checks unchanged semantic claims and prerequisites against retained
+acceptance evidence. It publishes one revision, restores only independently proven
+prior freshness, and leaves the target stage in progress. Historical acceptance
+revisions are unchanged. The original mutation is marked reconciled with its proof
+identity; its publication error remains retained in history. Normal typed save can
+then persist the proven working head.
 
-The operation returns a completed/failed result or a retained running job after
-20 seconds; observe it using `project.reconcile_status`. Repeating the identical
-successful request with the same ID returns its original commit without revision
-churn. Changing the payload under that ID rejects. Interrupted work never commits
-a partial head and is reported failed after restart. A completed result describes
-that historical reconciliation, not a new live attestation.
+The request supplies current `expected_revision`, document/adapter, target stage,
+prior and expected digests, provenance, and a unique reconciliation ID. An identical
+request is idempotent. Observe running work with `project.reconcile_status`; a
+completed response identifies historical reconciliation, not a new live attestation.

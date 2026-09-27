@@ -45,7 +45,11 @@ DECLARATIONS: dict[
         "Completed means Core committed the qualified receipt at revision, not "
         "artistic acceptance or fresh inspection. Uncommitted/interrupted means "
         "no qualified commit: inspect actual application state before recovery; "
-        "never blindly replay the mutation. No original operation result is retained "
+        "native_execution distinguishes native work from semantic commit. "
+        "A completed native result must not be replayed. recovery_operation and "
+        "recovery_proof identify reconciliation using a retained receipt or isolated "
+        "inverse-delta proof. before_digest, after_digest and stage_id identify "
+        "the transition. No original operation output is exposed "
         "here; use its domain inspection for output details. No application calls.",
     ),
     "project.restore": (
@@ -83,25 +87,21 @@ DECLARATIONS: dict[
         ReconcileInput,
         ReconcileResult,
         "mutating",
-        "Guarded recovery of a known pre-receipt working delta, never "
-        "trust-current adoption. "
-        "Require the durable prior_digest, exact expected_digest, "
-        "target unaccepted stage, "
-        "provenance and at most 16 typed owner-scoped delta steps. "
-        "Core internally leases a disposable proof host loaded from the exact "
-        "durable prior artifact locator and SHA. "
-        "Core replays only adapter-qualified recovery_replay operations "
-        "ON THE PROOF HOST; "
-        "the live document is read-only. Complete final content and "
-        "protected resource fingerprints "
-        "must match; unknown changes, changed accepted claims and "
-        "incomplete evidence reject. "
-        "Success restores proved prerequisite freshness, records a "
-        "recovery receipt and activates "
-        "the unaccepted working stage. Same reconciliation_id and "
-        "identical request are idempotent. "
-        "Running work is observed with project.reconcile_status. No "
-        "force flag or manual reacceptance.",
+        "Recover a known working transition without replay in the live application. "
+        "Supply current expected_revision, document/adapter, unaccepted stage_id, "
+        "prior_digest, expected_digest, provenance and reconciliation_id. For a "
+        "retained failed mutation supply mutation_id: a qualified receipt permits "
+        "reconciliation with empty delta. If post-attestation failed and no receipt "
+        "exists, supply its exact delta plus inverse_delta: Core snapshots the live "
+        "document into an owned proof host, applies the inverse there to reproduce "
+        "the complete trusted prior digest/resources, then applies delta there and "
+        "requires exact current digest/resources. Each step names owner_entity_id "
+        "within the stage. Up to 16 steps in each direction. Without inverse_delta, "
+        "replay needs a durable prior artifact. The live document is read-only; "
+        "no force adoption, save or mutation replay. Missing/wrong/stale proof fails "
+        "closed. On success one semantic revision is published; then normal typed "
+        "save can persist the recovered state. Same ID/request is idempotent. "
+        "Observe running work with project.reconcile_status.",
     ),
     "project.reconcile_status": (
         ReconcileStatusInput,

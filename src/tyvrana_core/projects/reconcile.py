@@ -11,6 +11,10 @@ from uuid import uuid4
 from tyvrana_protocol import (
     DocumentAttestation,
     DocumentMutationRequest,
+    DocumentMutationResult,
+    DocumentState,
+    ProofArtifact,
+    ResourceObservation,
     ResourceReference,
 )
 
@@ -148,7 +152,10 @@ class Reconciliation:
                 "reconciliation_stage",
                 "Choose an unaccepted working stage owning this document",
             )
-        if any(step.owner_entity_id not in target.entity_ids for step in request.delta):
+        if any(
+            step.owner_entity_id not in target.entity_ids
+            for step in [*request.delta, *request.inverse_delta]
+        ):
             raise ProjectError(
                 "reconciliation_ownership",
                 "Every replay step must belong to the target stage",
@@ -368,13 +375,145 @@ class Reconciliation:
                 "Declared prior head must match the durable trusted head",
             )
         parent = self.service.core.registry.get(request.adapter_id)
-        artifact = self.service.proofs.artifact(
-            locator=baseline.artifact_locator,
-            sha256=baseline.artifact_sha256,
-            project_id=baseline.application_project_id,
-        )
+        retained = self._mutation(project, request, baseline)
+        if retained and retained.get("receipt"):
+            await self._prove_receipt(project, request, data, baseline, retained)
+            return
+        if not request.delta:
+            raise ProjectError(
+                "reconciliation_proof_required",
+                "No retained post-state receipt; supply the exact delta and "
+                "inverse_delta for isolated proof",
+            )
+        artifact: ProofArtifact | DocumentState
+        if request.inverse_delta:
+            current = await self.service.continuity.observe(parent)
+            self._same_document(current, baseline, live=True)
+            if current.digest != request.expected_digest:
+                raise ProjectError(
+                    "reconciliation_delta_mismatch", "Current digest differs"
+                )
+            artifact = DocumentState.model_validate(
+                {
+                    key: getattr(current, key)
+                    for key in (
+                        "host_session_id",
+                        "document_session_id",
+                        "project_id",
+                        "format",
+                        "digest",
+                    )
+                }
+            )
+        else:
+            artifact = self.service.proofs.artifact(
+                locator=baseline.artifact_locator,
+                sha256=baseline.artifact_sha256,
+                project_id=baseline.application_project_id,
+            )
         async with self.service.proofs.acquire(parent, artifact) as proof:
             await self._prove_leased(project, request, data, proof)
+
+    def _mutation(
+        self, project: str, request: ReconcileInput, baseline: Baseline
+    ) -> dict[str, Any] | None:
+        if request.mutation_id is None:
+            return None
+        with self.service.store.transaction() as db:
+            row = db.execute(
+                "SELECT document_id,data FROM document_mutations "
+                "WHERE project_id=? AND id=?",
+                (project, request.mutation_id),
+            ).fetchone()
+        if row is None or row[0] != request.document_id:
+            raise ProjectError(
+                "reconciliation_mutation",
+                "Mutation belongs to another document or project",
+            )
+        intent: dict[str, Any] = json.loads(row[1])
+        if (
+            intent.get("state") not in {"uncommitted", "pending"}
+            or request.mutation_id in self.service.mutations.tasks
+            or intent.get("before") != baseline.digest
+            or intent.get("stage") != request.stage_id
+        ):
+            raise ProjectError(
+                "reconciliation_mutation",
+                "Mutation does not extend this trusted head and stage",
+            )
+        if request.delta and (
+            len(request.delta) != 1
+            or request.delta[0].operation != intent.get("operation")
+            or (
+                "arguments" in intent
+                and request.delta[0].arguments != intent["arguments"]
+            )
+        ):
+            raise ProjectError(
+                "reconciliation_mutation",
+                "Declared delta differs from the recorded mutation",
+            )
+        return intent
+
+    async def _prove_receipt(
+        self,
+        project: str,
+        request: ReconcileInput,
+        data: dict[str, Any],
+        baseline: Baseline,
+        intent: dict[str, Any],
+    ) -> None:
+        receipt = DocumentMutationResult.model_validate(intent["receipt"])
+        if (
+            receipt.mutation_id != request.mutation_id
+            or receipt.before.digest != baseline.digest
+            or receipt.after.digest != request.expected_digest
+        ):
+            raise ProjectError(
+                "reconciliation_receipt",
+                "Receipt does not prove this mutation and transition",
+            )
+        self._same_document(receipt.before, baseline, live=True)
+        self._same_document(receipt.after, baseline, live=True)
+        expected = {
+            (r.resource_kind, r.resource_id): r
+            for raw in baseline.resources
+            if (r := ResourceObservation.model_validate(raw))
+        }
+        if (
+            receipt.before.resource_scope != baseline.resource_scope
+            or self._resources(receipt.before) != expected
+        ):
+            raise ProjectError(
+                "reconciliation_receipt",
+                "Receipt resource pre-state differs from trusted evidence",
+            )
+        live = self.service.core.registry.get(request.adapter_id)
+        current = await self.service.continuity.observe(live)
+        self._same_document(current, baseline, live=True)
+        if (
+            current.digest != receipt.after.digest
+            or current.resource_scope != receipt.after.resource_scope
+            or self._resources(current) != self._resources(receipt.after)
+        ):
+            raise ProjectError(
+                "reconciliation_delta_mismatch",
+                "Current native state differs from the retained receipt",
+            )
+        with self.service.store.transaction() as db:
+            target, _, protected, bindings = self._claims(
+                db, project, request, baseline
+            )
+        for binding in bindings:
+            key = binding.resource_kind, binding.resource_id
+            if (
+                binding.entity_id not in target.entity_ids or binding.id in protected
+            ) and self._resources(current).get(key) != expected.get(key):
+                raise ProjectError(
+                    "reconciliation_upstream_changed", "Protected resource changed"
+                )
+        data["receipts"] = [receipt.model_dump(mode="json")]
+        self._commit(project, request, data, baseline, current, live)
 
     async def _prove_leased(
         self,
@@ -409,7 +548,7 @@ class Reconciliation:
                 "Proof and live adapters must represent the bound lineage",
             )
         contracts = {c.name: c for c in proof.registration.operations}
-        for step in request.delta:
+        for step in [*request.inverse_delta, *request.delta]:
             c = contracts.get(step.operation)
             if (
                 c is None
@@ -433,9 +572,70 @@ class Reconciliation:
             )
         previous = await service.continuity.observe(proof)
         self._same_document(previous, baseline, live=False)
+        if request.inverse_delta:
+            data["snapshot_proof"] = previous.model_dump(mode="json")
+            data["snapshot_source"] = current.model_dump(mode="json")
+            self._write(request.reconciliation_id, data)
+            if (
+                previous.host_session_id == current.host_session_id
+                or previous.digest != current.digest
+                or previous.resource_scope != current.resource_scope
+                or self._resources(previous) != self._resources(current)
+            ):
+                raise ProjectError(
+                    "reconciliation_snapshot",
+                    "Snapshot differs from exact live content or resource identity",
+                )
+            data["snapshot_proof"] = previous.model_dump(mode="json")
+            for step in request.inverse_delta:
+                args = DocumentMutationRequest(
+                    mutation_id=uuid4().hex,
+                    operation=step.operation,
+                    arguments=step.arguments,
+                    host_session_id=previous.host_session_id,
+                    document_session_id=previous.document_session_id,
+                    project_id=baseline.application_project_id,
+                    format=baseline.format,
+                    digest=previous.digest,
+                )
+                receipt = await service.mutations.guarded(proof.registration, args)
+                if receipt.before.digest != previous.digest or any(
+                    getattr(receipt.before, key) != getattr(previous, key)
+                    for key in (
+                        "host_session_id",
+                        "document_session_id",
+                        "project_id",
+                        "format",
+                        "resource_scope",
+                    )
+                ):
+                    raise ProjectError(
+                        "reconciliation_receipt", "Inverse receipt changed lineage"
+                    )
+                previous = receipt.after
+                data.setdefault("inverse_receipts", []).append(
+                    receipt.model_dump(mode="json")
+                )
+                self._write(request.reconciliation_id, data)
+            expected_resources = {
+                (r.resource_kind, r.resource_id): r
+                for raw in baseline.resources
+                if (r := ResourceObservation.model_validate(raw))
+            }
+            if (
+                previous.resource_scope != baseline.resource_scope
+                or self._resources(previous) != expected_resources
+            ):
+                raise ProjectError(
+                    "reconciliation_prior_head",
+                    "Inverse proof does not reproduce trusted resource evidence",
+                )
         if (
             previous.host_session_id == current.host_session_id
-            or previous.file_sha256 != baseline.artifact_sha256
+            or (
+                not request.inverse_delta
+                and previous.file_sha256 != baseline.artifact_sha256
+            )
             or previous.digest != baseline.digest
         ):
             raise ProjectError(
@@ -455,12 +655,12 @@ class Reconciliation:
             )
         for b in protected_bindings:
             resource_key = b.resource_kind, b.resource_id
-            r = prior_resources.get(resource_key)
+            observed = prior_resources.get(resource_key)
             if (
-                r is None
-                or r.state != "present"
-                or not r.fingerprint
-                or current_resources.get(resource_key) != r
+                observed is None
+                or observed.state != "present"
+                or not observed.fingerprint
+                or current_resources.get(resource_key) != observed
             ):
                 raise ProjectError(
                     "reconciliation_upstream_changed",
@@ -552,9 +752,25 @@ class Reconciliation:
                     "reconciliation_upstream_changed",
                     "Declared delta changes protected resources",
                 )
+        self._commit(project, request, data, baseline, final, live)
+
+    def _commit(
+        self,
+        project: str,
+        request: ReconcileInput,
+        data: dict[str, Any],
+        baseline: Baseline,
+        final: DocumentAttestation,
+        live: "AdapterInfo",
+    ) -> None:
+        service, store = self.service, self.service.store
         with store.transaction(write=True) as db:
             state = store.project(db, project)
             store.expect(state, request.expected_revision)
+            document = store._record(db, project, request.document_id)
+            if not isinstance(document, Document):
+                raise ProjectError("document_missing", "Bound document is missing")
+            self._mutation(project, request, baseline)
             row = db.execute(
                 "SELECT data FROM document_attestations WHERE "
                 "project_id=? AND document_id=?",
@@ -646,6 +862,7 @@ class Reconciliation:
             updated = baseline.model_copy(
                 update={
                     "digest": final.digest,
+                    "artifact_sha256": None,
                     "resources": [r.model_dump(mode="json") for r in final.resources],
                     "resource_scope": final.resource_scope,
                 }
@@ -674,6 +891,30 @@ class Reconciliation:
                     status=target.id,
                 ),
             )
+            if request.mutation_id:
+                row = db.execute(
+                    "SELECT data FROM document_mutations WHERE id=? AND project_id=?",
+                    (request.mutation_id, project),
+                ).fetchone()
+                assert row is not None
+                intent = json.loads(row[0])
+                data["source_mutation"] = intent.copy()
+                intent.update(
+                    state="completed",
+                    native_execution="completed",
+                    revision=revision,
+                    after=final.digest,
+                    reconciled_by=request.reconciliation_id,
+                )
+                intent["publication_error"] = {
+                    key: intent.pop(key)
+                    for key in ("error_code", "error_message", "error_details")
+                    if key in intent
+                }
+                db.execute(
+                    "UPDATE document_mutations SET data=? WHERE id=?",
+                    (json.dumps(intent), request.mutation_id),
+                )
             data["current_proof"] = final.model_dump(mode="json")
             data["result"] = ReconcileResult(
                 reconciliation_id=request.reconciliation_id,
