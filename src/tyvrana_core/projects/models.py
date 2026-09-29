@@ -440,6 +440,30 @@ class SearchResult(Model):
     next_offset: int | None
 
 
+class SavedInspectionInput(ProjectInput):
+    expected_revision: int = Field(ge=1)
+    document_id: Key
+    adapter_id: Key
+    checkpoint_id: Key
+    operation: Key = Field(
+        description="An advertised synchronous, artifact-free read-only "
+        "application operation."
+    )
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class SavedInspectionResult(Model):
+    scope: Literal["historical_saved_document"] = "historical_saved_document"
+    checkpoint_id: Key
+    document_id: Key
+    artifact_sha256: str
+    format: str
+    digest: str
+    operation: str
+    result: JsonValue
+    current_head_adopted: Literal[False] = False
+
+
 class ProjectOperationStatusInput(ProjectInput):
     operation_id: Key
     wait_seconds: float = Field(default=0, ge=0, le=20, allow_inf_nan=False)
@@ -563,4 +587,4 @@ class ProjectRevision(Model):
 
 
 class ProjectOperation(ProjectOperationHandle):
-    result: ApplyResult | Continuation | None = None
+    result: ApplyResult | Continuation | SavedInspectionResult | None = None

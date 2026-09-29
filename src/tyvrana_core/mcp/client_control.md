@@ -61,6 +61,5 @@ manage them internally. Select only work adapters; managed proofs are not work t
 Use project status operations. Unavailable proof lifecycle is a tooling gap.
 
 Reconcile then save/checkpoint before format-changing upgrades. Reload preserves content, not cross-format trust. Unsaved
-old-format migration is unsupported: keep the host open; no save/replay/capture/restore.
-Older file hashes or equal cross-format digests are not proof; follow continuation's
-recovery diagnostic.
+old-format migration needs original-format recovery first; keep the host open.
+Older file hashes or equal cross-format digests are not proof. Follow continuation's recovery diagnostic.

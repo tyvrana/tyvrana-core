@@ -33,6 +33,7 @@ from .models import (
     ProjectPatch,
     RemoveInput,
     RemoveResult,
+    SavedInspectionInput,
     SearchInput,
     SearchResult,
     VerifyInput,
@@ -241,6 +242,7 @@ class ProjectService:
                     ReconcileInput,
                     ReconcileStatusInput,
                     ProjectOperationStatusInput,
+                    SavedInspectionInput,
                 ),
             )
             connected = {
@@ -253,10 +255,17 @@ class ProjectService:
                     project_id, request.operation_id, request.wait_seconds
                 )
             if (
-                isinstance(request, (ApplyInput, ContinueInput, VerifyInput))
+                isinstance(
+                    request,
+                    (ApplyInput, ContinueInput, VerifyInput, SavedInspectionInput),
+                )
                 and OBSERVATION_OWNER.get() is None
             ):
                 return await self.operations.start(project_id, operation, request)
+            if isinstance(request, SavedInspectionInput):
+                from .saved_inspection import inspect_saved
+
+                return await inspect_saved(self, project_id, request)
             if isinstance(request, MutationStatusInput):
                 return await self.mutations.status(project_id, request)
             if operation.endswith("_cancel"):

@@ -23,6 +23,8 @@ from .models import (
     ProjectOperationStatusInput,
     RemoveInput,
     RemoveResult,
+    SavedInspectionInput,
+    SavedInspectionResult,
     SearchInput,
     SearchResult,
     VerifyInput,
@@ -39,6 +41,10 @@ class ContinueResponse(RootModel[Continuation | ProjectOperation]):
     pass
 
 
+class SavedInspectionResponse(RootModel[SavedInspectionResult | ProjectOperation]):
+    pass
+
+
 class AttestResponse(RootModel[AttestResult | AttestJob]):
     pass
 
@@ -46,11 +52,27 @@ class AttestResponse(RootModel[AttestResult | AttestJob]):
 DECLARATIONS: dict[
     str, tuple[type[BaseModel], type[BaseModel], Literal["read_only", "mutating"], str]
 ] = {
+    "project.inspect_saved": (
+        SavedInspectionInput,
+        SavedInspectionResponse,
+        "read_only",
+        "Inspect a retained checkpoint's exact saved document in a Core-owned "
+        "disposable host, without opening or changing the live document. Select an "
+        "advertised synchronous artifact-free read-only application operation; "
+        "Core validates complete checkpoint identity/digest/resources before and "
+        "after inspection and cleans up the host. Returns historical evidence only, "
+        "never current trust. Use it to recover prior field values when an "
+        "uncommitted mutation needs inverse_delta; an older checkpoint is only an "
+        "inverse candidate, which reconciliation must independently prove against "
+        "the exact latest prior head. Original-format inspection requires a "
+        "qualified adapter implementing that format. Slow work returns operation_id; "
+        "observe project.operation_status without replay.",
+    ),
     "project.operation_status": (
         ProjectOperationStatusInput,
         ProjectOperation,
         "read_only",
-        "Observe retained apply/continue/verify work using "
+        "Observe retained apply/continue/verify/inspect_saved work using "
         "operation_id and wait_seconds up to20. Pending is nonterminal; do not "
         "resubmit the batch. Core waits on the same native evidence within600seconds. "
         "Completed result is the original committed batch or observed continuation, "
@@ -72,7 +94,10 @@ DECLARATIONS: dict[
         "native_execution distinguishes native work from semantic commit. "
         "A completed native result must not be replayed. recovery_operation and "
         "recovery_proof identify reconciliation using a retained receipt or isolated "
-        "inverse-delta proof. before_digest, after_digest and stage_id identify "
+        "inverse-delta proof. Missing prior field values can be inspected with "
+        "project.inspect_saved on a retained checkpoint; full reconciliation proof "
+        "must still validate that candidate against the latest prior head. "
+        "before_digest, after_digest and stage_id identify "
         "the transition. arguments exposes the exact recorded request for correlated "
         "recovery; do not guess its delta or execute it again. Compact continuation "
         "omits arguments: retrieve this status when needed. No original output is "
@@ -154,7 +179,7 @@ DECLARATIONS: dict[
             " provenance. Migrate requires explicit from_format/to_format, "
             "the existing baseline's durable file SHA256 and an independent "
             "matching new-format proof. Unsaved old-format heads are unsupported: "
-            "keep the host open and stop; never substitute an older save hash. "
+            "keep open and follow continuation recovery; never use an older save hash. "
             "Reconcile and save/checkpoint before format-changing upgrades. "
             "It replaces only baseline metadata, "
             "derives freshness for unchanged historically accepted claims, "

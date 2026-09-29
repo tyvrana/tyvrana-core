@@ -17,6 +17,8 @@ from .models import (
     ContinueInput,
     ProjectOperation,
     ProjectOperationHandle,
+    SavedInspectionInput,
+    SavedInspectionResult,
     VerifyInput,
 )
 from .store import ProjectError
@@ -32,7 +34,9 @@ class ProjectOperations:
 
     def __init__(self, service: "ProjectService") -> None:
         self.service = service
-        self.tasks: dict[str, asyncio.Task[ApplyResult | Continuation]] = {}
+        self.tasks: dict[
+            str, asyncio.Task[ApplyResult | Continuation | SavedInspectionResult]
+        ] = {}
 
     async def shutdown(self) -> None:
         tasks = list(self.tasks.values())
@@ -96,8 +100,8 @@ class ProjectOperations:
         self,
         project: str,
         operation: str,
-        request: ApplyInput | ContinueInput | VerifyInput,
-    ) -> ApplyResult | Continuation | ProjectOperation:
+        request: ApplyInput | ContinueInput | VerifyInput | SavedInspectionInput,
+    ) -> ApplyResult | Continuation | SavedInspectionResult | ProjectOperation:
         args = request.model_dump(mode="json")
         duplicate = None
         with self.service.store.transaction() as db:
@@ -151,12 +155,14 @@ class ProjectOperations:
                 (key, project, "", json.dumps(data)),
             )
 
-        async def execute() -> ApplyResult | Continuation:
+        async def execute() -> ApplyResult | Continuation | SavedInspectionResult:
             result = await self.service.execute(operation, args)
-            assert isinstance(result, (ApplyResult, Continuation))
+            assert isinstance(
+                result, (ApplyResult, Continuation, SavedInspectionResult)
+            )
             return result
 
-        async def run() -> ApplyResult | Continuation:
+        async def run() -> ApplyResult | Continuation | SavedInspectionResult:
             token = OBSERVATION_OWNER.set(progress)
             try:
                 async with asyncio.timeout(self.execution_seconds):
@@ -199,7 +205,9 @@ class ProjectOperations:
         task = asyncio.create_task(run())
         self.tasks[key] = task
 
-        def finished(done: asyncio.Task[ApplyResult | Continuation]) -> None:
+        def finished(
+            done: asyncio.Task[ApplyResult | Continuation | SavedInspectionResult],
+        ) -> None:
             self.tasks.pop(key, None)
             if not done.cancelled():
                 done.exception()

@@ -253,3 +253,32 @@ defaults from scene inspection, nor replay the request on the work document.
 Compact continuation omits arguments; fetch the individual mutation status when
 recovery needs them. Inspection still establishes actual native state, and the
 independent proof must verify the proposed inverse/forward transition.
+
+## Recovering a stranded format upgrade
+
+Save and checkpoint the verified working head before changing its attestation
+format. Reload preserves the application process, not cross-format trust. Normal
+migration requires the current head's durable artifact; an older save cannot
+substitute for newer unsaved work.
+
+If an upgrade already stranded an unsaved head, keep that document open. Deployment
+may stage a qualified implementation of its original format, with compatible
+same-process reload support. Inspect the staged build and format before activation.
+This restores the verifier, not trust: Core must match the complete original-format
+head and identity, or reconcile a recorded uncommitted mutation using its existing
+independent proof. Arbitrary changes, incomplete receipts and mismatched snapshots
+still fail closed. No authoring operation is replayed on the work host.
+
+After proof, save the exact current document and create a verified checkpoint.
+Only then activate the current implementation, migrate from that exact saved head,
+and verify reopen, reattachment and a new checkpoint. Without a qualified original
+verifier or complete proof, preserve the live document and report the missing
+recovery requirement. Do not force-save, capture over the baseline or discard work.
+
+If prior field values are unavailable, `project.inspect_saved` runs a selected
+advertised read-only inspection against an exactly verified saved checkpoint in
+a managed disposable host. It returns historical evidence, never current trust.
+The checkpoint may precede other unsaved changes: use its values only as an inverse
+candidate, then require full reconciliation against the latest trusted head.
+Inspection cannot mutate, import/export artifacts or expose a proof adapter as a
+work target. Observe retained work through `project.operation_status`.

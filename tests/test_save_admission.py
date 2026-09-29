@@ -166,6 +166,7 @@ async def test_save_admission(
                 assert final.next_action == "inspect_failure"
                 assert final.error_code == {
                     "generation": "attestation_incomplete",
+                    "format": "attestation_upgrade_unsupported",
                     "document": "reattachment_required",
                     "wrong_job": "attestation_identity",
                     "timeout": "admission_timeout",
