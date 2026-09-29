@@ -20,7 +20,7 @@ from tyvrana_protocol import (
 )
 
 from ..errors import bounded_error, core_failure
-from .continuity import Baseline
+from .continuity import Baseline, Continuity
 from .models import (
     AttestationObservation,
     Binding,
@@ -402,21 +402,19 @@ class Reconciliation:
     def _same_document(
         evidence: DocumentAttestation, baseline: Baseline, *, live: bool
     ) -> None:
-        if (
-            evidence.project_id != baseline.application_project_id
-            or evidence.format != baseline.format
-            or (
-                live
-                and (
-                    evidence.host_session_id != baseline.host_session_id
-                    or evidence.document_session_id != baseline.document_session_id
-                )
+        if evidence.project_id != baseline.application_project_id or (
+            live
+            and (
+                evidence.host_session_id != baseline.host_session_id
+                or evidence.document_session_id != baseline.document_session_id
             )
         ):
             raise ProjectError(
                 "reconciliation_lineage",
-                "Document identity or attestation format differs",
+                "Document identity differs",
             )
+        if evidence.format != baseline.format:
+            raise Continuity.format_boundary(baseline, evidence.format)
 
     async def _run(
         self, project: str, request: ReconcileInput, data: dict[str, Any]

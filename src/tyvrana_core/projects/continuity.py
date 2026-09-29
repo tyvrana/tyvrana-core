@@ -49,7 +49,13 @@ class AttestInput(ProjectInput):
     trusted_artifact_locator: str | None = Field(
         default=None, min_length=1, max_length=4096
     )
-    trusted_artifact_sha256: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    trusted_artifact_sha256: str | None = Field(
+        default=None,
+        pattern="^[0-9a-f]{64}$",
+        description="Exact durable file hash of the current trusted head. "
+        "An older saved "
+        "checkpoint cannot prove an unsaved working head across attestation formats.",
+    )
     provenance: str = Field(default="", max_length=2048)
     from_format: str | None = Field(default=None, min_length=1, max_length=256)
     to_format: str | None = Field(default=None, min_length=1, max_length=256)
@@ -455,6 +461,39 @@ class Continuity:
             )
         return evidence
 
+    @staticmethod
+    def format_boundary(baseline: Baseline, current_format: str) -> ProjectError:
+        durable = baseline.artifact_sha256 is not None
+        return ProjectError(
+            "attestation_format_changed"
+            if durable
+            else "attestation_upgrade_unsupported",
+            "Attestation format changed. "
+            + (
+                "Migration requires the exact trusted saved head and "
+                "independent new-format proof."
+                if durable
+                else "The old-format working head is unsaved; "
+                "no durable artifact proves it. "
+                "Cross-format equivalence cannot be inferred from equal digest strings."
+            ),
+            from_format=baseline.format,
+            to_format=current_format,
+            trusted_artifact_sha256=baseline.artifact_sha256,
+            next_action="project.attest(mode=migrate)"
+            if durable
+            else "keep_open_unsupported_upgrade",
+            recovery=(
+                "Keep the live document open. Do not replay, force-save, capture, "
+                "or substitute an older checkpoint hash. Before a format-changing "
+                "upgrade, reconcile and save/checkpoint under the existing format. "
+                "After an unsupported upgrade, preserve the live process and stop. "
+                "Returning to a qualified implementation of the original format "
+                "requires separate authorization and qualification. Discard/restore "
+                "loses unsaved work and requires explicit user approval."
+            ),
+        )
+
     async def resolve(
         self,
         project: str,
@@ -517,6 +556,8 @@ class Continuity:
                 )
             ):
                 matches.append(adapter)
+            elif evidence.format != baseline.format:
+                failure = self.format_boundary(baseline, evidence.format)
             elif progress:
                 if (
                     evidence.host_session_id != baseline.host_session_id
@@ -574,7 +615,12 @@ class Continuity:
         if baseline and not baseline.artifact_sha256:
             raise ProjectError(
                 "migration_artifact_missing",
-                "Baseline lacks durable trusted file SHA256",
+                "Baseline lacks durable trusted file SHA256 for the current head; "
+                "an older save cannot substitute. Keep the live document open and stop "
+                "unsupported upgrade recovery; do not replay or force-save.",
+                next_action="keep_open_unsupported_upgrade",
+                from_format=baseline.format,
+                to_format=request.to_format,
             )
         if baseline and request.trusted_artifact_sha256 != baseline.artifact_sha256:
             raise ProjectError(
@@ -640,6 +686,8 @@ class Continuity:
                 "document_mismatch", "Trusted baseline belongs to another document"
             )
         evidence = await self.observe(adapter)
+        if baseline and evidence.format != baseline.format:
+            raise self.format_boundary(baseline, evidence.format)
         if request.mode == "capture":
             if baseline and (
                 evidence.host_session_id != baseline.host_session_id
@@ -904,7 +952,12 @@ class Continuity:
         if not baseline.artifact_sha256:
             raise ProjectError(
                 "migration_artifact_missing",
-                "Baseline lacks durable trusted file SHA256",
+                "Baseline lacks durable trusted file SHA256 for the current head; "
+                "an older save cannot substitute. Keep the live document open and stop "
+                "unsupported upgrade recovery; do not replay or force-save.",
+                next_action="keep_open_unsupported_upgrade",
+                from_format=baseline.format,
+                to_format=request.to_format,
             )
         if request.trusted_artifact_sha256 != baseline.artifact_sha256:
             raise ProjectError(

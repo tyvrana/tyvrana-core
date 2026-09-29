@@ -670,3 +670,21 @@ Observe `project.attest_status`, `project.restore_status` or `project.reconcile_
 the corresponding `_cancel` operation waits for cleanup. Proof jobs are bounded to
 ten minutes, with one proof per work host and four simultaneous leases. Core shutdown cancels retained work; a restarted Core reports interrupted
 work rather than adopting its result. A later workflow creates a new proof process.
+
+
+### Attestation format upgrade boundary
+
+A same-process adapter update preserves native content, not the meaning of a prior
+attestation. Before a format-changing activation, complete pending work, reconcile
+any uncommitted transition under the existing format, then save and checkpoint that
+exact head. Migration requires its trusted file SHA256 plus independently matching
+new-format content and resources. An older checkpoint hash is not a replacement.
+
+An already-upgraded unsaved old-format head is unsupported and fails closed. Core
+continuation reports `attestation_upgrade_unsupported` with both formats and an
+actionable preservation diagnostic. Keep the live host open; do not force-save,
+replay native work, use capture to adopt it, or silently restore a checkpoint.
+Equal digest strings across formats do not establish equivalence. Returning to a
+qualified implementation of the original format needs separate authorization and
+qualification. Restoring durable work discards unsaved changes and requires explicit
+approval. This boundary introduces no alternate digest or compatibility API.

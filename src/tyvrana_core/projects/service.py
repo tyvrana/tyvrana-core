@@ -131,12 +131,17 @@ class ProjectService:
                         if failure and failure.code == "content_diverged"
                         else "unverified",
                         error_code=failure.code if failure else None,
+                        error_details=failure.details if failure else None,
                         next_action="continue"
                         if resolved
                         else "observe_status"
                         if document.id in recovering
                         else "project.attest(mode=reattach)"
                         if failure and failure.code == "reattachment_required"
+                        else str(failure.details["next_action"])
+                        if failure
+                        and isinstance(failure.details, dict)
+                        and "next_action" in failure.details
                         else "inspect_document",
                         committed_digest=baseline.digest,
                         saved_artifact_sha256=baseline.artifact_sha256,

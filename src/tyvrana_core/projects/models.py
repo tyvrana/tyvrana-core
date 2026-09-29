@@ -494,6 +494,7 @@ class ApplicationStatus(Model):
     ] = "unverified"
     next_action: str = "inspect_document"
     error_code: str | None = None
+    error_details: JsonValue = None
     committed_digest: str | None = None
     saved_artifact_sha256: str | None = None
 
